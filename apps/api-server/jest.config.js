@@ -5,4 +5,5 @@ module.exports = {
   moduleFileExtensions: ['ts', 'js'],
   testRegex: '.*\\.spec\\.ts$',
   passWithNoTests: true,
+  setupFiles: ['reflect-metadata'],
 };

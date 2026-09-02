@@ -31,7 +31,7 @@ Redis 중복 방지를 거친 뒤 ClickHouse에 실제 로그 데이터가 저�
 - [x] Step 3. Docker 인프라 기본 구성
 - [x] Step 4. Kafka 클러스터 및 Topic 구성
 - [x] Step 5. ClickHouse 및 Redis 구성/검증
-- [ ] Step 6. API Server 구현
+- [x] Step 6. API Server 구현
 - [ ] Step 7. Nginx + API Server 2대 구성
 - [ ] Step 8. Consumer 공통 기반 구현
 - [ ] Step 9. Click Consumer 구현

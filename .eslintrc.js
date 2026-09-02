@@ -11,4 +11,10 @@ module.exports = {
     'prettier',
   ],
   ignorePatterns: ['dist', 'node_modules'],
+  rules: {
+    '@typescript-eslint/no-unused-vars': [
+      'error',
+      { ignoreRestSiblings: true },
+    ],
+  },
 };
