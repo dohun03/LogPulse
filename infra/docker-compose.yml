@@ -129,12 +129,15 @@ services:
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: '1'
       CLICKHOUSE_USER: default
       CLICKHOUSE_PASSWORD: ''
+      CLICKHOUSE_WRITER_PASSWORD: 'logpulse-writer-dev'
+      CLICKHOUSE_READER_PASSWORD: 'logpulse-reader-dev'
     ports:
       - '8123:8123'
       - '9000:9000'
     volumes:
       - clickhouse_data:/var/lib/clickhouse
-      - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./clickhouse/init.sql:/infra/clickhouse/init.sql:ro
+      - ./clickhouse/init.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
     healthcheck:
       test: ['CMD', 'wget', '--spider', 'http://localhost:8123/ping']
       interval: 10s
