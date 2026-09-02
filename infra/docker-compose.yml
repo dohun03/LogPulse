@@ -38,6 +38,7 @@ services:
       - '19092:19092'
     volumes:
       - kafka_1_data:/var/lib/kafka/data
+      - ./kafka/create-topics.sh:/infra/kafka/create-topics.sh:ro
     healthcheck:
       test:
         - CMD
@@ -64,6 +65,7 @@ services:
       - '29092:29092'
     volumes:
       - kafka_2_data:/var/lib/kafka/data
+      - ./kafka/create-topics.sh:/infra/kafka/create-topics.sh:ro
     healthcheck:
       test:
         - CMD
@@ -90,6 +92,7 @@ services:
       - '39092:39092'
     volumes:
       - kafka_3_data:/var/lib/kafka/data
+      - ./kafka/create-topics.sh:/infra/kafka/create-topics.sh:ro
     healthcheck:
       test:
         - CMD
