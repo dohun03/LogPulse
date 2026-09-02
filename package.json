@@ -10,7 +10,7 @@
     "build": "npm run build --workspace=libs/shared && npm run build --workspace=apps/api-server && npm run build --workspace=apps/consumer-worker",
     "lint": "npm run lint --workspace=apps/api-server && npm run lint --workspace=apps/consumer-worker",
     "test": "npm run test --workspace=apps/api-server && npm run test --workspace=apps/consumer-worker",
-    "typecheck": "npm run typecheck --workspace=libs/shared && npm run typecheck --workspace=apps/api-server && npm run typecheck --workspace=apps/consumer-worker"
+    "typecheck": "npm run build --workspace=libs/shared && npm run typecheck --workspace=apps/api-server && npm run typecheck --workspace=apps/consumer-worker"
   },
   "devDependencies": {
     "@nestjs/cli": "^10.4.5",

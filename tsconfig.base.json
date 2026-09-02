@@ -1,12 +1,9 @@
 {
   "compilerOptions": {
-    "module": "commonjs",
+    "module": "node16",
+    "moduleResolution": "node16",
     "target": "ES2021",
-    "moduleResolution": "node",
-    "baseUrl": "./",
-    "paths": {
-      "@logpulse/shared": ["libs/shared/src"]
-    },
+    "isolatedModules": true,
     "strict": true,
     "strictPropertyInitialization": false,
     "esModuleInterop": true,
@@ -14,6 +11,7 @@
     "forceConsistentCasingInFileNames": true,
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
-    "sourceMap": true
+    "sourceMap": true,
+    "types": ["node", "jest"]
   }
 }
