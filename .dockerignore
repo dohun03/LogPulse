@@ -1,0 +1,10 @@
+.git
+node_modules
+dist
+coverage
+.npm
+.cache
+logs
+**/*.tsbuildinfo
+docker-compose.yml
+infra/docker-compose.yml

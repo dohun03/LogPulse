@@ -28,7 +28,7 @@ Redis 중복 방지를 거친 뒤 ClickHouse에 실제 로그 데이터가 저�
 - [x] Step 0. 명세 및 기존 프로젝트 확인
 - [x] Step 1. 프로젝트 구조 및 Workspace 구성
 - [x] Step 2. 공통 계약 및 설정 구성
-- [ ] Step 3. Docker 인프라 기본 구성
+- [x] Step 3. Docker 인프라 기본 구성
 - [ ] Step 4. Kafka 클러스터 및 Topic 구성
 - [ ] Step 5. ClickHouse 및 Redis 구성/검증
 - [ ] Step 6. API Server 구현
