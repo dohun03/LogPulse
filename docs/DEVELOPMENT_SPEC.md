@@ -6,7 +6,7 @@
 | 작성일 | 2026-09-02 |
 | 참조 문서 | `LogPulse_PRD.md`, `LogPulse_System_Architecture.md` |
 | 문서 목적 | 개발자가 별도 설계 없이 바로 코드를 작성할 수 있는 수준의 구현 명세 제공 |
-| 주요 변경사항 | NestJS API 서버의 HTTP 어댑터를 **Express → Fastify**로 확정하고, **Nginx 1대 → NestJS API 서버 2대 → Kafka 3대 클러스터 → Consumer Group/Instance 1:1 매핑** 토폴로지를 명시 |
+| 주요 변경사항 | NestJS API 서버의 HTTP 어댑터를 **Express → Fastify**로 확정하고, **Nginx 1대 → NestJS API 서버 2대 → Kafka 3대 클러스터 → Consumer Group/Instance 1:1 매핑** 토폴로지를 명시하고, **Consumer 역할 분리 및 Click BatchBuffer flush 실패 정책을 고정** |
 | 배포 기준 | Nginx 1대, API 서버 2대, Kafka 브로커 3대, Click Consumer 3대, Payment Consumer 2대 |
 
 > 이 문서는 PRD와 시스템 아키텍처 문서에서 정의한 요구사항·구조를 그대로 계승하며, 여기서는 "어떻게 코드로 작성하고 배포하는가"에 집중한다.
@@ -336,6 +336,12 @@ click-consumer-3 → Partition 2
 
 정상적인 **stable group 상태에서는 3개 Consumer와 3개 Partition이 1:1로 배정**된다.
 
+### 파티션 수 축소 근거
+
+기존 설계보다 `click-events`를 12→3, `payment-events`를 6→2로 축소한다.
+
+> **1:1 매핑을 통해 Consumer Group Rebalance/Partition Assignment 동작을 명확히 검증하기 위해 운영 스펙 대비 파티션 수를 컨슈머 인스턴스 수와 동일하게 축소함. 실제 처리량 확장이 필요하면 파티션 재분할이 필요하며 이 경우 기존 key 기반 해시가 깨질 수 있음을 인지함.**
+
 > 단, Kafka Consumer Group은 장애/재시작/스케일링 등 멤버십 변화가 발생하면 리밸런싱할 수 있다. 따라서 "리밸런싱이 절대 발생하지 않는다"가 아니라, **정상 상태에서 각 consumer가 한 partition씩 담당하는 최적 병렬 구조를 목표로 한다**고 정의한다.
 
 ---
@@ -531,7 +537,8 @@ API #1과 API #2는 대부분 동일한 값을 사용하며, `KAFKA_CLIENT_ID`�
 | `KAFKA_CLICK_TOPIC` | string | `click-events` | click 토픽 |
 | `KAFKA_PAYMENT_TOPIC` | string | `payment-events` | payment 토픽 |
 | `API_KEY` | string | 필수 | 내부 서비스 인증용 API Key |
-| `RATE_LIMIT_MAX` | number | 5000 | IP당 분당 최대 요청 수 |
+| `RATE_LIMIT_MAX` | number | 5000 | API 전체 기준 IP당 분당 최대 요청 수 |
+| `API_INSTANCE_COUNT` | number | 2 | API 인스턴스 수. 프로세스별 Rate Limit 계산에 사용 |
 | `LOG_LEVEL` | string | `info` | Pino 로그 레벨 |
 
 운영 환경 예시:
@@ -548,6 +555,7 @@ KAFKA_CLIENT_ID=logpulse-api-server-2
 
 | 변수명 | 타입 | 기본값 | 설명 |
 |---|---|---|---|
+| `CONSUMER_ROLE` | string | 필수 | `click` 또는 `payment`. 컨테이너당 하나의 Consumer 역할만 활성화 |
 | `KAFKA_BROKERS` | string (CSV) | `localhost:9092` | Kafka Broker 목록 |
 | `KAFKA_CLIENT_ID` | string | `logpulse-consumer-worker` | Kafka client ID |
 | `CLICK_CONSUMER_GROUP_ID` | string | `logpulse-click-loader` | click consumer group |
@@ -743,8 +751,19 @@ async function bootstrap() {
     origin: true,
   });
 
+  const aggregateRateLimit =
+    Number(process.env.RATE_LIMIT_MAX ?? 5000);
+
+  const apiInstanceCount =
+    Math.max(
+      1,
+      Number(process.env.API_INSTANCE_COUNT ?? 2),
+    );
+
   await app.register(fastifyRateLimit, {
-    max: Number(process.env.RATE_LIMIT_MAX ?? 5000),
+    max: Math.ceil(
+      aggregateRateLimit / apiInstanceCount,
+    ),
     timeWindow: '1 minute',
   });
 
@@ -1597,6 +1616,52 @@ export class HealthController {
 
 ## 9.1 Consumer 역할
 
+### 9.1.1 Consumer 역할 분리 방식
+
+`consumer-worker` 애플리케이션은 하나의 이미지/코드를 공유할 수 있지만,
+**컨테이너 하나당 하나의 Consumer 역할만 실행**한다.
+
+환경 변수:
+
+```dotenv
+CONSUMER_ROLE=click
+```
+
+또는
+
+```dotenv
+CONSUMER_ROLE=payment
+```
+
+`apps/consumer-worker/src/app.module.ts`는 `CONSUMER_ROLE` 값을 기준으로
+다음 중 하나만 등록한다.
+
+```text
+CONSUMER_ROLE=click
+  -> ClickEventsConsumer만 등록
+
+CONSUMER_ROLE=payment
+  -> PaymentEventsConsumer만 등록
+```
+
+`click`과 `payment`를 동시에 실행하는 단일 Worker 컨테이너를 운영 토폴로지에서 사용하지 않는다.
+
+Docker Compose 서비스는 다음처럼 **총 5개**를 명시한다.
+
+```text
+worker-click-1
+worker-click-2
+worker-click-3
+
+worker-payment-1
+worker-payment-2
+```
+
+모든 서비스는 같은 consumer-worker 이미지/코드를 사용하고,
+`CONSUMER_ROLE`과 `KAFKA_CLIENT_ID`만 인스턴스별로 다르게 지정한다.
+
+역할에 맞지 않는 Consumer Provider가 등록되지 않았는지 startup log와 실제 Kafka Consumer Group 상태로 검증한다.
+
 ### Click Consumer
 
 ```text
@@ -1622,14 +1687,31 @@ ClickHouse
 ```text
 Kafka payment-events
     ↓
-Redis dedup (strict)
+Redis 중복 확인
     ↓
-ClickHouse
+ClickHouse 저장
+    ↓
+저장 성공 후 Redis 처리 완료 표시
     ↓
 성공 시 commit
     ↓
 실패 지속 시 DLQ
 ```
+
+Payment Dedup 순서는 다음과 같이 고정한다.
+
+```text
+1. Redis에서 eventId 중복 여부 확인
+2. 중복이 아니면 ClickHouse 저장 시도
+3. ClickHouse 저장 성공 후 Redis에 처리 완료 키를 기록
+4. 그 다음 Kafka Offset Commit
+```
+
+> **ClickHouse 저장 전에 Redis `SET NX`로 처리 완료를 먼저 표시하지 않는다.**
+> 그렇게 하면 `Redis NEW → ClickHouse 실패 → Retry → DUPLICATE` 순서로 실제 데이터가 유실될 수 있다.
+>
+> ClickHouse 저장 성공 후 Redis 처리 완료 표시 전에 프로세스가 비정상 종료되는 경우에는
+> 동일 `eventId`가 다시 처리될 수 있으므로, `payment_events`의 `ReplacingMergeTree`와 `(order_id, event_id)` 정렬 키를 이용해 재적재가 최종적으로 중복 결과를 남기지 않도록 검증한다.
 
 정책:
 
@@ -1868,25 +1950,18 @@ export class PaymentEventsConsumer
               message.value!.toString(),
             );
 
-          const dedupResult =
+          const isDuplicate =
             await retryWithBackoff(
               () =>
                 this.redisDedup
-                  .checkAndMarkStrict(
+                  .isDuplicate(
                     'payment',
                     envelope.eventId,
-                    Number(
-                      process.env
-                        .REDIS_PAYMENT_DEDUP_TTL_SEC ??
-                        86400,
-                    ),
                   ),
               3,
             );
 
-          if (
-            dedupResult === 'DUPLICATE'
-          ) {
+          if (isDuplicate) {
             resolveOffset(
               message.offset,
             );
@@ -1908,6 +1983,21 @@ export class PaymentEventsConsumer
                   .PAYMENT_MAX_RETRY ??
                   3,
               ),
+            );
+
+            await retryWithBackoff(
+              () =>
+                this.redisDedup
+                  .markProcessed(
+                    'payment',
+                    envelope.eventId,
+                    Number(
+                      process.env
+                        .REDIS_PAYMENT_DEDUP_TTL_SEC ??
+                        86400,
+                    ),
+                  ),
+              3,
             );
 
             resolveOffset(
@@ -2022,23 +2112,29 @@ export class RedisDedupService {
     }
   }
 
-  async checkAndMarkStrict(
+  async isDuplicate(
+    topic: string,
+    eventId: string,
+  ): Promise<boolean> {
+    const result = await this.redis.exists(
+      `dedup:${topic}:${eventId}`,
+    );
+
+    return result === 1;
+  }
+
+  async markProcessed(
     topic: string,
     eventId: string,
     ttlSec: number,
-  ): Promise<DedupResult> {
-    const result =
-      await this.redis.set(
-        `dedup:${topic}:${eventId}`,
-        '1',
-        'EX',
-        ttlSec,
-        'NX',
-      );
-
-    return result === 'OK'
-      ? 'NEW'
-      : 'DUPLICATE';
+  ): Promise<void> {
+    await this.redis.set(
+      `dedup:${topic}:${eventId}`,
+      '1',
+      'EX',
+      ttlSec,
+      'NX',
+    );
   }
 }
 ```
@@ -2120,7 +2216,37 @@ export class BatchBuffer<T> {
 }
 ```
 
-> 실제 운영에서는 flush 실패를 어떻게 재처리할지까지 결정해야 한다. 단순히 에러를 버리지 말고, 실패 배치의 재시도 또는 프로세스 중단 정책 중 하나를 명시적으로 선택한다.
+### 9.5.1 Flush 실패 정책
+
+Click 이벤트는 Best-effort / Fail-Open 정책을 사용한다.
+
+`BatchBuffer`의 ClickHouse flush는 다음 정책을 따른다.
+
+```text
+1차 flush 실패
+  ↓
+즉시 재시도 1회
+  ↓
+실패
+  ↓
+즉시 재시도 1회 추가
+  ↓
+실패
+  ↓
+해당 batch 폐기
+  ↓
+warn 로그 기록
+  ↓
+실패 건수 metric/count 증가
+```
+
+- 총 재시도 횟수는 **2회**로 고정한다.
+- 최종 실패한 Click batch는 v1에서 별도 재처리하지 않는다.
+- 프로세스를 중단하여 재처리를 유도하지 않는다.
+- `click-events-retry` 토픽은 **v1에서는 사용하지 않으며**, 향후 확장을 위한 토픽으로만 유지한다.
+- 구현 완료 기준은 **재시도 2회 → 최종 폐기 → warn 로그/실패 건수 기록**의 명시적 동작이다.
+
+> `click-events-retry`를 실제 재처리 경로로 사용하려면 별도 Retry Consumer와 재처리 정책이 필요하므로 v1 스코프에서는 포함하지 않는다.
 
 ---
 
@@ -2462,7 +2588,7 @@ echo "LogPulse Kafka topics created."
 | `click-events` | 3 | 3 | 2 | 처리량 우선 |
 | `payment-events` | 2 | 3 | 2 | 정확성/순서 |
 | `payment-events-dlq` | 2 | 3 | 2 | payment 최종 실패 격리 |
-| `click-events-retry` | 3 | 3 | 2 | click 재처리 경로 |
+| `click-events-retry` | 3 | 3 | 2 | v1 미사용. 향후 click 재처리 확장용 |
 
 > 로컬 개발 환경에서 Broker 1대만 기동하는 경우 운영 토픽 생성 스크립트의 RF=3은 사용할 수 없으므로, 로컬 전용 override에서 RF=1 / min.insync.replicas=1을 사용한다.
 
@@ -2616,7 +2742,7 @@ Redis 1
 ClickHouse 1
 ```
 
-### 전체 토폴로지 검증용 로컬 (현재 로컬 성능은 넉넉하므로, 해당 구성으로 실행하도록.)
+### 전체 토폴로지 검증용 로컬
 
 Docker Compose 리소스가 허용되면 다음 구성으로 검증한다.
 
@@ -2704,7 +2830,7 @@ KAFKA_CLIENT_ID=logpulse-api-server-2
 
 ## 14.6 Consumer 실행
 
-Click Consumer 3개와 Payment Consumer 2개가 하나의 worker 이미지에서 실행되도록 구성할 수도 있고, 같은 애플리케이션을 여러 인스턴스로 실행할 수도 있다.
+Click Consumer 3개와 Payment Consumer 2개는 **동일 worker 이미지/코드를 공유하되 역할별 컨테이너를 분리**한다.
 
 권장 환경 구성:
 
@@ -2921,6 +3047,7 @@ export function buildDedupKey(
 | Nginx | 1대 |
 | API 서버 | 2대 |
 | API 상태 | Stateless |
+| API 전체 Rate Limit 기준 | `RATE_LIMIT_MAX`를 API 인스턴스 수로 나눈 프로세스별 제한 |
 | API HTTP Adapter | Fastify |
 | Nginx 분산 | Round-Robin |
 | Kafka Broker | 3대 |
@@ -2929,10 +3056,12 @@ export function buildDedupKey(
 | 운영 min ISR | 2 |
 | `click-events` partitions | 3 |
 | Click Consumer Instances | 3 |
+| Click Consumer 역할 | `CONSUMER_ROLE=click` |
 | Click Consumer Group | 1개 |
 | Click 정상 매핑 | Consumer 1 : Partition 1 |
 | `payment-events` partitions | 2 |
 | Payment Consumer Instances | 2 |
+| Payment Consumer 역할 | `CONSUMER_ROLE=payment` |
 | Payment Consumer Group | 1개 |
 | Payment 정상 매핑 | Consumer 1 : Partition 1 |
 | Click key | `sessionId` |

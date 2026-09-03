@@ -68,6 +68,10 @@ Redis 중복 방지를 거친 뒤 ClickHouse에 실제 로그 데이터가 저�
 21. 현재 Step의 검증이 실패하면 다음 Step으로 넘어가지 않는다.
 22. 문제가 발견되면 숨기지 말고 원인을 수정한 뒤 다시 검증한다.
 23. 의도적으로 명세와 다른 구현을 할 경우 이유를 문서에 남긴다.
+24. Consumer는 `CONSUMER_ROLE=click | payment` 기준으로 컨테이너 역할을 분리한다.
+25. Click BatchBuffer flush 최종 실패는 재시도 2회 후 폐기하며, v1에서는 `click-events-retry`를 사용하지 않는다.
+26. Payment는 ClickHouse 저장 전에 Redis 처리 완료 키를 기록하지 않는다.
+27. API Rate Limit은 `RATE_LIMIT_MAX / API_INSTANCE_COUNT` 기준으로 인스턴스별 제한을 계산한다.
 
 ---
 
@@ -126,7 +130,7 @@ Redis 중복 방지를 거친 뒤 ClickHouse에 실제 로그 데이터가 저�
 - Redis 1대
 - ClickHouse 1대
 
-### 전체 로컬 검증 형태 (로컬 사양이 충분하므로, 최소 실행 구조 대신 이 아래 구조로 가져가겠다.)
+### 전체 로컬 검증 형태  (로컬 사양이 충분하므로, 최소 실행 구조 대신 이 아래 구조로 가져가겠다.)
 
 - Nginx 1대
 - API Server 2대
@@ -143,7 +147,7 @@ Redis 중복 방지를 거친 뒤 ClickHouse에 실제 로그 데이터가 저�
 - 필요한 구현 범위를 확인했다.
 - 프로젝트 구조를 모르는 상태에서 구현을 시작하지 않았다.
 
-- [ ] Step 0 완료
+- [x] Step 0 완료
 
 ---
 
@@ -198,7 +202,7 @@ tsconfig.json
 
 각 애플리케이션을 독립적으로 Build할 수 있다.
 
-- [ ] Step 1 완료
+- [x] Step 1 완료
 
 ---
 
@@ -241,7 +245,7 @@ API와 Consumer에서 동일한 Event 계약을 각각 중복 정의하지 않�
 
 공통 Event 계약의 기준이 하나로 통일되어 있다.
 
-- [ ] Step 2 완료
+- [x] Step 2 완료
 
 ---
 
@@ -291,7 +295,7 @@ docker compose up -d
 
 전체 기반 인프라가 정상 기동되고 안정적으로 유지된다.
 
-- [ ] Step 3 완료
+- [x] Step 3 완료
 
 ---
 
@@ -351,7 +355,7 @@ Kafka CLI 또는 동등한 방법으로 실제 상태를 확인한다.
 
 Kafka가 실제 3 Broker Cluster로 정상 동작하고 필요한 Topic 구성이 모두 검증되었다.
 
-- [ ] Step 4 완료
+- [x] Step 4 완료
 
 ---
 
@@ -425,7 +429,7 @@ Redis가 DUPLICATE로 판단
 
 Redis와 ClickHouse가 독립적으로 정상 연결되고 필요한 Schema와 Dedup 정책이 검증되었다.
 
-- [ ] Step 5 완료
+- [x] Step 5 완료
 
 ---
 
@@ -473,17 +477,26 @@ Kafka Key:
 
 ## Rate Limit 검증
 
-API Server가 2대이므로 프로세스별 Rate Limit을 그대로 사용하면 실제 전체 한도가 의도보다 2배가 될 수 있다.
+API Server가 2대이므로 동일한 `RATE_LIMIT_MAX`를 각 프로세스에 그대로 적용하면
+실질적인 전체 한도가 의도보다 2배가 될 수 있다.
 
-따라서 명세에 맞는 Rate Limit 범위를 결정하고 구현한다.
+이번 프로젝트에서는 Redis 기반 공통 Rate Limit을 추가하지 않고,
+**`RATE_LIMIT_MAX`를 API 인스턴스 수로 나눈 값을 각 API 프로세스의 제한으로 사용한다.**
 
-가능한 범위:
+예:
 
-- API 프로세스별
-- Nginx 기준
-- Redis를 사용하는 공통 Rate Limit
+```text
+RATE_LIMIT_MAX=5000
+API_INSTANCE_COUNT=2
 
-의도하지 않은 2배 제한이 발생하지 않도록 한다.
+API #1 = 2500 req/min/IP
+API #2 = 2500 req/min/IP
+--------------------------------
+의도한 전체 한도 ≈ 5000 req/min/IP
+```
+
+따라서 `DEVELOPMENT_SPEC.md`의 기본값과 동일하게 `API_INSTANCE_COUNT=2`를 사용한다.
+Step 7에서 API 2대가 모두 떠 있는 실제 환경에서 합산 동작을 검증한다.
 
 ## Nginx Proxy 고려
 
@@ -516,7 +529,7 @@ Kafka에 실제 메시지가 들어갔는지 확인한다.
 
 두 API가 실제 Kafka Cluster와 연결되고 Kafka Publish 성공 시에만 `202`를 반환한다.
 
-- [ ] Step 6 완료
+- [x] Step 6 완료
 
 ---
 
@@ -529,6 +542,19 @@ Kafka에 실제 메시지가 들어갔는지 확인한다.
 - API Server #1
 - API Server #2
 - Nginx
+
+### Rate Limit 인스턴스 분배
+
+API 프로세스별 `RATE_LIMIT_MAX`를 API 인스턴스 수로 나눈다.
+
+```text
+RATE_LIMIT_MAX / API_INSTANCE_COUNT
+```
+
+현재 전체 목표 한도는 5000 req/min/IP,
+API 인스턴스 수는 2대이므로 각 API 프로세스는 2500 req/min/IP를 사용한다.
+
+Redis 기반 공통 Rate Limit으로 확장하지 않는다.
 
 Nginx 설정:
 
@@ -584,22 +610,46 @@ API 한 대가 장애가 나도 다른 인스턴스로 서비스가 계속된다
 - Graceful Shutdown
 - Structured Logging
 
-Consumer 실행 역할은 분리할 수 있어야 한다.
+Consumer 실행 역할은 **컨테이너 단위로 분리**한다.
 
-권장 구성:
+동일한 `consumer-worker` 이미지/코드를 사용하되 `CONSUMER_ROLE` 환경 변수로
+각 컨테이너가 하나의 역할만 실행하도록 만든다.
 
-```text
-click-consumer-1
-click-consumer-2
-click-consumer-3
-
-payment-consumer-1
-payment-consumer-2
+```dotenv
+CONSUMER_ROLE=click
 ```
 
-한 Worker가 무조건 두 Topic을 모두 처리해야 하는 구조로 만들지 않는다.
+또는
+
+```dotenv
+CONSUMER_ROLE=payment
+```
+
+`apps/consumer-worker/src/app.module.ts`에서 다음처럼 조건부로 등록한다.
+
+```text
+CONSUMER_ROLE=click
+  -> ClickEventsConsumer만 등록
+
+CONSUMER_ROLE=payment
+  -> PaymentEventsConsumer만 등록
+```
+
+Docker Compose 운영/전체 로컬 검증 구성은 정확히 다음 5개다.
+
+```text
+worker-click-1
+worker-click-2
+worker-click-3
+
+worker-payment-1
+worker-payment-2
+```
+
+`click`과 `payment` Consumer가 동시에 실행되는 단일 Worker 컨테이너를 사용하지 않는다.
 
 Partition Assignment는 반드시 Kafka Consumer Group이 담당한다.
+P0/P1/P2를 애플리케이션 코드에서 직접 지정하지 않는다.
 
 ## 로그 규칙
 
@@ -666,13 +716,39 @@ Click 이벤트 Consumer를 구현한다.
 
 Flush 도중 오류가 발생했을 때 이벤트가 조용히 버려지는 구조를 만들지 않는다.
 
-다음 상황의 동작을 코드로 명확하게 정의한다.
+다음 정책으로 동작을 고정한다.
+
+```text
+flush 실패
+  ↓
+즉시 재시도 1회
+  ↓
+실패
+  ↓
+즉시 재시도 1회 추가
+  ↓
+실패
+  ↓
+batch 폐기
+  ↓
+warn 로그 + 실패 건수 증가
+```
+
+- 총 재시도 횟수는 2회다.
+- Click은 Best-effort / Fail-Open 정책이므로 최종 실패 batch를 별도 재처리하지 않는다.
+- `click-events-retry` 토픽은 v1에서 **사용하지 않는다**.
+- `click-events-retry` Consumer도 이번 Step 9에서는 구현하지 않는다.
+- 향후 확장용 토픽으로만 유지한다.
+
+다음 상황의 동작도 코드와 테스트로 명확하게 정의한다.
 
 - Size Trigger Flush
 - Interval Trigger Flush
 - Flush 중 추가 Flush 요청
 - Flush 실패
-- Flush 재시도 또는 실패 처리
+- 동시 Flush 방지
+- flush 재시도 2회
+- 최종 실패 시 batch 폐기 + warn 로그 + 실패 건수 기록
 
 ## Consumer 수
 
@@ -717,7 +793,7 @@ API
 - Interval에 의한 Flush가 동작한다.
 - 동시에 두 Flush가 실행되지 않는다.
 - Redis 장애 시 Click은 Fail-Open으로 동작한다.
-- Flush 실패 시 데이터 유실이 발생하지 않도록 처리된다.
+- Flush 실패 시 정의된 정책(재시도 2회 → batch 폐기 → warn 로그/실패 건수 기록)대로 처리된다.
 
 ClickHouse Query로 실제 저장 결과를 확인한다.
 
@@ -758,23 +834,51 @@ orderId
 
 ## 매우 중요한 처리 순서 검증
 
+Payment Dedup은 **저장 전에 처리 완료를 표시하지 않는다.**
+
+정확한 처리 순서:
+
+```text
+1. Redis 중복 여부 확인
+2. DUPLICATE면 Offset 처리
+3. NEW면 ClickHouse 저장 시도
+4. ClickHouse 저장 성공
+5. Redis에 처리 완료 키 기록
+6. Offset Commit
+```
+
 다음 상황을 모두 명확하게 처리해야 한다.
 
 1. Redis 연결 자체가 불가능한 경우
 2. Redis가 DUPLICATE를 반환하는 경우
-3. Redis에 처리 표시 후 ClickHouse 저장이 실패하는 경우
+3. ClickHouse 저장이 실패하는 경우
 4. ClickHouse Retry가 모두 실패한 경우
 5. DLQ Publish가 성공한 경우
 6. DLQ Publish가 실패한 경우
-7. Kafka Offset Commit이 성공/실패한 경우
+7. ClickHouse 저장 성공 후 Redis 완료 표시 전에 프로세스가 종료되는 경우
+8. Kafka Offset Commit이 성공/실패한 경우
 
-Payment에서 데이터가 유실되거나,
-실제로 저장되지 않았는데 DUPLICATE로 인해 재처리가 막히는 상황이 없어야 한다.
+**금지 사항:**
+
+```text
+Redis SET NX 완료
+  ↓
+ClickHouse 저장
+```
+
+순서로 구현하지 않는다.
+
+그 순서에서는 ClickHouse 저장 실패 후 재처리 시 Redis DUPLICATE가 되어
+실제 데이터 저장이 영구적으로 누락될 수 있다.
+
+ClickHouse 저장 성공 후 Redis 처리 완료 표시 전에 재시작되어 중복 적재가 발생할 수 있는 경우에는
+`payment_events`의 `ReplacingMergeTree` 및 `(order_id, event_id)` 기준으로 최종 중복이 해소되는지 검증한다.
 
 ## Consumer 수
 
 - Payment Consumer 2대
 - 동일 Consumer Group
+- `CONSUMER_ROLE=payment`
 - `payment-events` Partition 2개
 
 정상적인 최종 상태:
@@ -1016,6 +1120,15 @@ k6 테스트를 구성하거나 기존 테스트를 완성한다.
 - CPU
 - Memory
 
+### 측정 도구
+
+포트폴리오 스코프에서는 별도 Prometheus/Grafana를 추가하지 않는다.
+
+- CPU / Memory: `docker stats`
+- Kafka Lag: `kafka-consumer-groups.sh --describe`
+
+부하 테스트 종료 후 결과를 기록하고, 이전 기준과 비교 가능하도록 명령어와 결과를 함께 남긴다.
+
 ## Backpressure 확인
 
 부하를 주면서 확인한다.
@@ -1158,6 +1271,7 @@ Payment
 - Offset Commit 검증
 - Consumer Rebalance 확인
 - API 장애 복구 확인
+- API 2대 환경에서 Rate Limit 합산 동작 확인
 - Kafka Broker 장애 복구 확인
 - Redis 장애 복구 확인
 - ClickHouse 장애 복구 확인
