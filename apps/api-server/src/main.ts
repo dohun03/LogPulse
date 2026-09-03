@@ -29,8 +29,16 @@ async function bootstrap() {
     origin: true,
   });
 
+  const aggregateRateLimit =
+    Number(process.env.RATE_LIMIT_MAX ?? 5000);
+
+  const apiInstanceCount = Math.max(
+    1,
+    Number(process.env.API_INSTANCE_COUNT ?? 2),
+  );
+
   await app.register(fastifyRateLimit, {
-    max: Number(process.env.RATE_LIMIT_MAX ?? 5000),
+    max: Math.ceil(aggregateRateLimit / apiInstanceCount),
     timeWindow: '1 minute',
   });
 

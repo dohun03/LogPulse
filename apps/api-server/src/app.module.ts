@@ -13,7 +13,10 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
     LoggerModule.forRoot({
       pinoHttp: {
         level: process.env.LOG_LEVEL ?? 'info',
-        mixin: () => ({ service: 'api-server' }),
+        mixin: () => ({
+          service: 'api-server',
+          instance: process.env.KAFKA_CLIENT_ID ?? 'logpulse-api-server',
+        }),
       },
     }),
     EventsModule,

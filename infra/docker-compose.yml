@@ -16,10 +16,36 @@ x-kafka-common-env: &kafka-common-env
   KAFKA_HEAP_OPTS: '-Xmx512m -Xms512m'
   KAFKA_LOG_DIRS: /var/lib/kafka/data
 
-x-api-placeholder: &api-placeholder
-  image: node:20-alpine
+x-api-common: &api-common
+  build:
+    context: ..
+    dockerfile: apps/api-server/Dockerfile
   restart: unless-stopped
-  working_dir: /app
+  environment:
+    PORT: '3000'
+    KAFKA_BROKERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+    KAFKA_CLICK_TOPIC: click-events
+    KAFKA_PAYMENT_TOPIC: payment-events
+    API_KEY: dev-api-key
+    RATE_LIMIT_MAX: '5000'
+    API_INSTANCE_COUNT: '2'
+    LOG_LEVEL: info
+  depends_on:
+    kafka-1:
+      condition: service_healthy
+    kafka-2:
+      condition: service_healthy
+    kafka-3:
+      condition: service_healthy
+  healthcheck:
+    test:
+      - CMD
+      - node
+      - -e
+      - "fetch('http://localhost:3000/health/liveness').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+    interval: 10s
+    timeout: 5s
+    retries: 10
   networks:
     - logpulse_net
 
@@ -147,32 +173,32 @@ services:
       - logpulse_net
 
   api-server-1:
-    <<: *api-placeholder
+    <<: *api-common
     container_name: logpulse-api-1
     environment:
-      SERVICE_NAME: api-server-1
-    command:
-      - sh
-      - -c
-      - >-
-        node -e "const http=require('http');const service=process.env.SERVICE_NAME;
-        const server=http.createServer((req,res)=>{if(req.url.startsWith('/health')){res.writeHead(200,{ 'Content-Type':'application/json'});
-        res.end(JSON.stringify({status:'ok',service}));return;}res.writeHead(200,{'Content-Type':'text/plain'});
-        res.end(`placeholder ${service}`);}); server.listen(3000,'0.0.0.0');"
+      PORT: '3000'
+      KAFKA_BROKERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      KAFKA_CLIENT_ID: logpulse-api-server-1
+      KAFKA_CLICK_TOPIC: click-events
+      KAFKA_PAYMENT_TOPIC: payment-events
+      API_KEY: dev-api-key
+      RATE_LIMIT_MAX: '5000'
+      API_INSTANCE_COUNT: '2'
+      LOG_LEVEL: info
 
   api-server-2:
-    <<: *api-placeholder
+    <<: *api-common
     container_name: logpulse-api-2
     environment:
-      SERVICE_NAME: api-server-2
-    command:
-      - sh
-      - -c
-      - >-
-        node -e "const http=require('http');const service=process.env.SERVICE_NAME;
-        const server=http.createServer((req,res)=>{if(req.url.startsWith('/health')){res.writeHead(200,{ 'Content-Type':'application/json'});
-        res.end(JSON.stringify({status:'ok',service}));return;}res.writeHead(200,{'Content-Type':'text/plain'});
-        res.end(`placeholder ${service}`);}); server.listen(3000,'0.0.0.0');"
+      PORT: '3000'
+      KAFKA_BROKERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      KAFKA_CLIENT_ID: logpulse-api-server-2
+      KAFKA_CLICK_TOPIC: click-events
+      KAFKA_PAYMENT_TOPIC: payment-events
+      API_KEY: dev-api-key
+      RATE_LIMIT_MAX: '5000'
+      API_INSTANCE_COUNT: '2'
+      LOG_LEVEL: info
 
   nginx:
     image: nginx:1.25-alpine
