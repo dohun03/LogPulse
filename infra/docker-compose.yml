@@ -281,6 +281,24 @@ services:
       KAFKA_CLIENT_ID: logpulse-worker-click-3
       CLICK_CONSUMER_GROUP_ID: logpulse-click-loader
 
+  worker-payment-1:
+    <<: *worker-common
+    container_name: logpulse-worker-payment-1
+    environment:
+      <<: *worker-env
+      CONSUMER_ROLE: payment
+      KAFKA_CLIENT_ID: logpulse-worker-payment-1
+      PAYMENT_CONSUMER_GROUP_ID: logpulse-payment-loader
+
+  worker-payment-2:
+    <<: *worker-common
+    container_name: logpulse-worker-payment-2
+    environment:
+      <<: *worker-env
+      CONSUMER_ROLE: payment
+      KAFKA_CLIENT_ID: logpulse-worker-payment-2
+      PAYMENT_CONSUMER_GROUP_ID: logpulse-payment-loader
+
 volumes:
   kafka_1_data:
   kafka_2_data:

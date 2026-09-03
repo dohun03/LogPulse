@@ -5,11 +5,14 @@ import { RedisModule } from './redis/redis.module';
 import { ClickhouseModule } from './clickhouse/clickhouse.module';
 import { DlqProducerService } from './dlq/dlq-producer.service';
 import { ClickEventsConsumer } from './consumers/click-events.consumer';
+import { PaymentEventsConsumer } from './consumers/payment-events.consumer';
 
 const consumerRole = process.env.CONSUMER_ROLE ?? 'click';
 
 const consumerProviders =
-  consumerRole === 'click' ? [ClickEventsConsumer] : [];
+  consumerRole === 'click' ? [ClickEventsConsumer]
+  : consumerRole === 'payment' ? [PaymentEventsConsumer]
+  : [];
 
 @Module({
   imports: [

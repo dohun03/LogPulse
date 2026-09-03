@@ -35,7 +35,7 @@ Redis 중복 방지를 거친 뒤 ClickHouse에 실제 로그 데이터가 저�
 - [x] Step 7. Nginx + API Server 2대 구성
 - [x] Step 8. Consumer 공통 기반 구현
 - [x] Step 9. Click Consumer 구현
-- [ ] Step 10. Payment Consumer 구현
+- [x] Step 10. Payment Consumer 구현
 - [ ] Step 11. 전체 End-to-End 검증
 - [ ] Step 12. 장애 및 복구 테스트
 - [ ] Step 13. 부하 테스트 및 운영 검증
@@ -927,7 +927,7 @@ ClickHouse 실패
 
 Payment 이벤트의 정상 처리, 중복 처리, Retry, DLQ, Offset Commit이 실제 실행 환경에서 모두 검증된다.
 
-- [ ] Step 10 완료
+- [x] Step 10 완료
 
 ---
 

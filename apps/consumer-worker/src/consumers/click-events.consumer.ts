@@ -4,9 +4,7 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
-
 import { EachBatchPayload, Kafka } from 'kafkajs';
-
 import {
   clickConsumerConfig,
   kafkaBrokers,
@@ -14,6 +12,7 @@ import {
 } from '../config/consumer.config';
 import { BatchBuffer } from '../clickhouse/batch-buffer';
 import { ClickHouseWriterService } from '../clickhouse/clickhouse-writer.service';
+import { toClickHouseDateTime } from '../common/datetime.util';
 import { retryWithBackoff } from '../common/retry.util';
 import { RedisDedupService } from '../redis/redis-dedup.service';
 
@@ -153,22 +152,13 @@ export class ClickEventsConsumer
       event_type: p.eventType,
       product_id: p.productId ?? null,
       page_url: p.pageUrl,
-      occurred_at: this.toClickHouseDateTime(
+      occurred_at: toClickHouseDateTime(
         p.occurredAt,
       ),
-      ingested_at: this.toClickHouseDateTime(
+      ingested_at: toClickHouseDateTime(
         envelope.ingestedAt,
       ),
       metadata: JSON.stringify(p.metadata ?? {}),
     };
-  }
-
-  // ClickHouse DateTime64는 'YYYY-MM-DD HH:MM:SS.mmm' 형식을 요구하므로
-  // ISO 8601(예: 2026-09-03T06:30:00.000Z)을 UTC 기준으로 변환한다.
-  private toClickHouseDateTime(iso: string): string {
-    return new Date(iso)
-      .toISOString()
-      .replace('T', ' ')
-      .replace('Z', '');
   }
 }
