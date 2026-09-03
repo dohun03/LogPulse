@@ -32,8 +32,8 @@ Redis 중복 방지를 거친 뒤 ClickHouse에 실제 로그 데이터가 저�
 - [x] Step 4. Kafka 클러스터 및 Topic 구성
 - [x] Step 5. ClickHouse 및 Redis 구성/검증
 - [x] Step 6. API Server 구현
-- [ ] Step 7. Nginx + API Server 2대 구성
-- [ ] Step 8. Consumer 공통 기반 구현
+- [x] Step 7. Nginx + API Server 2대 구성
+- [x] Step 8. Consumer 공통 기반 구현
 - [ ] Step 9. Click Consumer 구현
 - [ ] Step 10. Payment Consumer 구현
 - [ ] Step 11. 전체 End-to-End 검증
@@ -690,7 +690,7 @@ Pino Structured JSON 사용.
 
 Consumer가 실제 인프라에 연결되고 공통 기능이 정상 동작한다.
 
-- [ ] Step 8 완료
+- [x] Step 8 완료
 
 ---
 

@@ -1,5 +1,20 @@
-import { PaymentEventPayload } from '@logpulse/shared';
+import { NestFactory } from '@nestjs/core';
+import { Logger } from 'nestjs-pino';
 
-export function usesSharedType(event: PaymentEventPayload) {
-  return event.status;
+import { AppModule } from './app.module';
+
+async function bootstrap() {
+  const app = await NestFactory.createApplicationContext(
+    AppModule,
+    { bufferLogs: true },
+  );
+
+  app.useLogger(app.get(Logger));
+  app.enableShutdownHooks();
+
+  const logger = app.get(Logger);
+  logger.log('consumer-worker application started');
 }
+
+bootstrap();
+
