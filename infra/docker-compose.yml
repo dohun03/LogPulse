@@ -49,6 +49,44 @@ x-api-common: &api-common
   networks:
     - logpulse_net
 
+x-worker-env: &worker-env
+  KAFKA_BROKERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+  KAFKA_CLICK_TOPIC: click-events
+  KAFKA_PAYMENT_TOPIC: payment-events
+  KAFKA_PAYMENT_DLQ_TOPIC: payment-events-dlq
+  REDIS_URL: redis://redis:6379
+  REDIS_CLICK_DEDUP_TTL_SEC: '600'
+  REDIS_PAYMENT_DEDUP_TTL_SEC: '86400'
+  CLICK_BATCH_MAX_SIZE: '500'
+  CLICK_BATCH_FLUSH_MS: '1000'
+  PAYMENT_MAX_RETRY: '3'
+  CLICKHOUSE_URL: http://clickhouse:8123
+  CLICKHOUSE_DATABASE: logpulse
+  CLICKHOUSE_USERNAME: logpulse_writer
+  CLICKHOUSE_PASSWORD: logpulse-writer-dev
+  LOG_LEVEL: info
+
+x-worker-common: &worker-common
+  build:
+    context: ..
+    dockerfile: apps/consumer-worker/Dockerfile
+  restart: unless-stopped
+  environment:
+    <<: *worker-env
+  depends_on:
+    kafka-1:
+      condition: service_healthy
+    kafka-2:
+      condition: service_healthy
+    kafka-3:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    clickhouse:
+      condition: service_healthy
+  networks:
+    - logpulse_net
+
 services:
   kafka-1:
     image: apache/kafka:4.3.1
@@ -215,6 +253,33 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     networks:
       - logpulse_net
+
+  worker-click-1:
+    <<: *worker-common
+    container_name: logpulse-worker-click-1
+    environment:
+      <<: *worker-env
+      CONSUMER_ROLE: click
+      KAFKA_CLIENT_ID: logpulse-worker-click-1
+      CLICK_CONSUMER_GROUP_ID: logpulse-click-loader
+
+  worker-click-2:
+    <<: *worker-common
+    container_name: logpulse-worker-click-2
+    environment:
+      <<: *worker-env
+      CONSUMER_ROLE: click
+      KAFKA_CLIENT_ID: logpulse-worker-click-2
+      CLICK_CONSUMER_GROUP_ID: logpulse-click-loader
+
+  worker-click-3:
+    <<: *worker-common
+    container_name: logpulse-worker-click-3
+    environment:
+      <<: *worker-env
+      CONSUMER_ROLE: click
+      KAFKA_CLIENT_ID: logpulse-worker-click-3
+      CLICK_CONSUMER_GROUP_ID: logpulse-click-loader
 
 volumes:
   kafka_1_data:

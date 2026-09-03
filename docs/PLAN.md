@@ -34,7 +34,7 @@ Redis 중복 방지를 거친 뒤 ClickHouse에 실제 로그 데이터가 저�
 - [x] Step 6. API Server 구현
 - [x] Step 7. Nginx + API Server 2대 구성
 - [x] Step 8. Consumer 공통 기반 구현
-- [ ] Step 9. Click Consumer 구현
+- [x] Step 9. Click Consumer 구현
 - [ ] Step 10. Payment Consumer 구현
 - [ ] Step 11. 전체 End-to-End 검증
 - [ ] Step 12. 장애 및 복구 테스트
@@ -801,7 +801,7 @@ ClickHouse Query로 실제 저장 결과를 확인한다.
 
 Click 이벤트가 HTTP부터 ClickHouse까지 실제로 전달되고 저장되는 것을 확인한다.
 
-- [ ] Step 9 완료
+- [x] Step 9 완료
 
 ---
 

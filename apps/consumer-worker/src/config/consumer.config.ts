@@ -1,3 +1,14 @@
+import {
+  CompressionCodecs,
+  CompressionTypes,
+} from 'kafkajs';
+import LZ4Codec from '@2l/kafkajs-lz4';
+
+// API Producer가 LZ4로 압축해 발행하므로 Consumer에서도 동일 codec을 등록해야
+// Fetch 시 압축을 해제할 수 있다.
+CompressionCodecs[CompressionTypes.LZ4] =
+  new LZ4Codec().codec;
+
 export const kafkaClientId =
   process.env.KAFKA_CLIENT_ID ?? 'logpulse-consumer-worker';
 

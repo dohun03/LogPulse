@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-
 import { ClickHouseWriterService } from './clickhouse-writer.service';
 
 @Module({

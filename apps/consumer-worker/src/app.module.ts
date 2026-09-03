@@ -1,10 +1,15 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { LoggerModule } from 'nestjs-pino';
-
 import { RedisModule } from './redis/redis.module';
 import { ClickhouseModule } from './clickhouse/clickhouse.module';
 import { DlqProducerService } from './dlq/dlq-producer.service';
+import { ClickEventsConsumer } from './consumers/click-events.consumer';
+
+const consumerRole = process.env.CONSUMER_ROLE ?? 'click';
+
+const consumerProviders =
+  consumerRole === 'click' ? [ClickEventsConsumer] : [];
 
 @Module({
   imports: [
@@ -18,6 +23,6 @@ import { DlqProducerService } from './dlq/dlq-producer.service';
     RedisModule,
     ClickhouseModule,
   ],
-  providers: [DlqProducerService],
+  providers: [DlqProducerService, ...consumerProviders],
 })
 export class AppModule {}
