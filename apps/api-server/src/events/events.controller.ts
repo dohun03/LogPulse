@@ -1,12 +1,4 @@
-import {
-  Body,
-  Controller,
-  HttpCode,
-  HttpStatus,
-  Post,
-  UseGuards,
-} from '@nestjs/common';
-
+import { Body, Controller, HttpCode, HttpStatus, Post, UseGuards } from '@nestjs/common';
 import { EventsService } from './events.service';
 import { CreateClickEventDto } from './dto/create-click-event.dto';
 import { CreatePaymentEventDto } from './dto/create-payment-event.dto';

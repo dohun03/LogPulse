@@ -1,21 +1,13 @@
-import {
-  Injectable,
-  Logger,
-  OnModuleDestroy,
-  OnModuleInit,
-} from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { EachBatchPayload, Kafka } from 'kafkajs';
 import { ClickHouseWriterService } from '../clickhouse/clickhouse-writer.service';
 import { toClickHouseDateTime } from '../common/datetime.util';
 import { retryWithBackoff } from '../common/retry.util';
-import {
-  kafkaBrokers,
-  kafkaClientId,
-  paymentConsumerConfig,
-} from '../config/consumer.config';
+import { kafkaBrokers, kafkaClientId, paymentConsumerConfig } from '../config/consumer.config';
 import { DlqProducerService } from '../dlq/dlq-producer.service';
 import { RedisDedupService } from '../redis/redis-dedup.service';
 
+// Kafka에서 가져오는 '결제 이벤트' 인터페이스
 interface PaymentEventEnvelope {
   eventId: string;
   ingestedAt: string;
@@ -32,12 +24,8 @@ interface PaymentEventEnvelope {
 }
 
 @Injectable()
-export class PaymentEventsConsumer
-  implements OnModuleInit, OnModuleDestroy
-{
-  private readonly logger = new Logger(
-    PaymentEventsConsumer.name,
-  );
+export class PaymentEventsConsumer implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(PaymentEventsConsumer.name);
 
   private readonly kafka = new Kafka({
     clientId: kafkaClientId,
@@ -54,17 +42,17 @@ export class PaymentEventsConsumer
     private readonly dlqProducer: DlqProducerService,
   ) {}
 
+  // NestJS 구동 시 자동 실행: Kafka 연결 및 구독
   async onModuleInit() {
     await this.consumer.connect();
-
     await this.consumer.subscribe({
       topic: paymentConsumerConfig.topic,
       fromBeginning: false,
     });
 
+    // Kafka로부터 메시지를 배치 단위로 가져와서 처리 시작
     await this.consumer.run({
       autoCommit: paymentConsumerConfig.autoCommit,
-
       eachBatch: async ({
         batch,
         resolveOffset,
@@ -72,24 +60,20 @@ export class PaymentEventsConsumer
         commitOffsetsIfNecessary,
         uncommittedOffsets,
       }: EachBatchPayload) => {
+        // 배치의 각 메시지 개별 처리 (processMessage)
         for (const message of batch.messages) {
           await this.processMessage(message, resolveOffset);
         }
 
+        // 배치 단위 처리 후 생존 신고
         await heartbeat();
 
-        // autoCommit=false이므로 해결(resolve)된 offset을 명시적으로 커밋한다.
-        // 성공 또는 DLQ 이관이 끝난 offset만 resolve되므로, 커밋은
-        // "저장/안전한 DLQ 처리 이후"에만 일어난다.
-        await commitOffsetsIfNecessary(
-          uncommittedOffsets(),
-        );
+        // 성공 또는 DLQ 이관된 offset을 명시적으로 커밋한다.
+        await commitOffsetsIfNecessary(uncommittedOffsets());
       },
     });
 
-    this.logger.log(
-      `PaymentEventsConsumer subscribed (group=${paymentConsumerConfig.groupId}, topic=${paymentConsumerConfig.topic})`,
-    );
+    this.logger.log(`PaymentEventsConsumer subscribed (group=${paymentConsumerConfig.groupId}, topic=${paymentConsumerConfig.topic})`);
   }
 
   async onModuleDestroy() {
@@ -105,21 +89,15 @@ export class PaymentEventsConsumer
     },
     resolveOffset: (offset: string) => void,
   ) {
-    const envelope = JSON.parse(
-      message.value!.toString(),
-    ) as PaymentEventEnvelope;
+    const envelope = JSON.parse(message.value!.toString()) as PaymentEventEnvelope;
 
-    // 1) Redis 중복 확인. Redis 장애 시 isDuplicate가 throw → Fail-Closed.
+    // Redis 중복 확인
     const isDuplicate = await retryWithBackoff(
-      () =>
-        this.redisDedup.isDuplicate(
-          'payment',
-          envelope.eventId,
-        ),
+      () => this.redisDedup.isDuplicate('payment', envelope.eventId),
       3,
     );
 
-    // 2) DUPLICATE면 offset 처리 후 다음 메시지로.
+    // 중복이면 오프셋 처리 후 마무리
     if (isDuplicate) {
       resolveOffset(message.offset);
       return;
@@ -128,28 +106,23 @@ export class PaymentEventsConsumer
     const row = this.toPaymentRow(envelope);
 
     try {
-      // 3) ClickHouse 저장(지수 백오프 재시도).
+      // 건별로 바로 DB 저장 (클릭 이벤트와 다르게 버퍼에 모으지 않음.)
       await retryWithBackoff(
-        () =>
-          this.clickhouseWriter.insertPaymentEvents([row]),
+        () => this.clickhouseWriter.insertPaymentEvents([row]),
         paymentConsumerConfig.maxRetry,
       );
 
-      // 4) ClickHouse 저장 성공 후 Redis 처리 완료 키 기록.
+      // 성공 후 Redis 처리 완료 키 기록.
       await retryWithBackoff(
-        () =>
-          this.redisDedup.markProcessed(
-            'payment',
-            envelope.eventId,
-            paymentConsumerConfig.dedupTtlSec,
-          ),
+        () => this.redisDedup.markProcessed('payment', envelope.eventId, paymentConsumerConfig.dedupTtlSec),
         3,
       );
 
-      // 5) 성공 시 offset 처리.
+      // 성공 시 offset 처리.
       resolveOffset(message.offset);
     } catch (err) {
-      // ClickHouse 재시도가 모두 실패하면 DLQ로 이관한다.
+      // 실패하면 DLQ로 이관한다.
+
       // 민감한 원본 값(orderId/amount 등)은 로그에 남기지 않는다.
       this.logger.error(
         {
@@ -160,20 +133,15 @@ export class PaymentEventsConsumer
         'ClickHouse 적재 최종 실패, DLQ 이관',
       );
 
-      // DLQ publish가 실패하면 throw되어 offset을 resolve하지 않으므로
-      // 다음 rebalance/재처리 시 다시 시도된다.
-      await this.dlqProducer.send(
-        envelope,
-        (err as Error).message,
-      );
+      // DLQ 이관도 실패하면 throw되어 offset을 resolve하지 않으므로 다음 rebalance/재처리 시 다시 시도된다.
+      await this.dlqProducer.send(envelope, (err as Error).message);
 
       resolveOffset(message.offset);
     }
   }
 
-  private toPaymentRow(
-    envelope: PaymentEventEnvelope,
-  ): Record<string, unknown> {
+  // DB 컬럼명에 맞게 매핑
+  private toPaymentRow(envelope: PaymentEventEnvelope): Record<string, unknown> {
     const p = envelope.payload;
 
     return {

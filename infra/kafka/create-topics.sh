@@ -4,7 +4,7 @@ set -euo pipefail
 BROKER="${KAFKA_BROKER:-kafka-1:9092}"
 KAFKA_BIN="/opt/kafka/bin"
 
-# click-events
+# click-events: 클릭 토픽 (3일 보관)
 "$KAFKA_BIN/kafka-topics.sh" \
   --bootstrap-server "$BROKER" \
   --create \
@@ -16,7 +16,7 @@ KAFKA_BIN="/opt/kafka/bin"
   --config cleanup.policy=delete \
   --config min.insync.replicas=2
 
-# payment-events
+# payment-events: 결제 토픽 (14일 보관)
 "$KAFKA_BIN/kafka-topics.sh" \
   --bootstrap-server "$BROKER" \
   --create \
@@ -28,7 +28,7 @@ KAFKA_BIN="/opt/kafka/bin"
   --config cleanup.policy=delete \
   --config min.insync.replicas=2
 
-# payment DLQ
+# payment-events-dlq: 결제 DLQ 토픽 (30일 보관)
 "$KAFKA_BIN/kafka-topics.sh" \
   --bootstrap-server "$BROKER" \
   --create \
@@ -40,7 +40,7 @@ KAFKA_BIN="/opt/kafka/bin"
   --config cleanup.policy=delete \
   --config min.insync.replicas=2
 
-# click retry
+# click retry: 클릭 이벤트 처리 실패 시 임시로 우회 저장하는 큐 (3일 보관)
 "$KAFKA_BIN/kafka-topics.sh" \
   --bootstrap-server "$BROKER" \
   --create \

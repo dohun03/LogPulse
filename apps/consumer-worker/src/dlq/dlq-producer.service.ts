@@ -1,22 +1,9 @@
-import {
-  Injectable,
-  Logger,
-  OnModuleDestroy,
-  OnModuleInit,
-} from '@nestjs/common';
-
-import {
-  Kafka,
-  Producer,
-} from 'kafkajs';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Kafka, Producer } from 'kafkajs';
 
 @Injectable()
-export class DlqProducerService
-  implements OnModuleInit, OnModuleDestroy
-{
-  private readonly logger = new Logger(
-    DlqProducerService.name,
-  );
+export class DlqProducerService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(DlqProducerService.name);
 
   private readonly kafka = new Kafka({
     clientId: 'logpulse-dlq-producer',
@@ -41,15 +28,9 @@ export class DlqProducerService
     await this.producer.disconnect();
   }
 
-  async send(
-    originalEnvelope: unknown,
-    failureReason: string,
-  ) {
+  async send(originalEnvelope: unknown, failureReason: string) {
     await this.producer.send({
-      topic:
-        process.env.KAFKA_PAYMENT_DLQ_TOPIC ??
-        'payment-events-dlq',
-
+      topic: process.env.KAFKA_PAYMENT_DLQ_TOPIC ?? 'payment-events-dlq',
       messages: [
         {
           value: JSON.stringify({

@@ -36,7 +36,7 @@ Redis 중복 방지를 거친 뒤 ClickHouse에 실제 로그 데이터가 저�
 - [x] Step 8. Consumer 공통 기반 구현
 - [x] Step 9. Click Consumer 구현
 - [x] Step 10. Payment Consumer 구현
-- [ ] Step 11. 전체 End-to-End 검증
+- [x] Step 11. 전체 End-to-End 검증
 - [ ] Step 12. 장애 및 복구 테스트
 - [ ] Step 13. 부하 테스트 및 운영 검증
 - [ ] Step 14. 최종 정리 및 문서화
@@ -999,7 +999,7 @@ HTTP
  -> ClickHouse
 ```
 
-- [ ] Step 11 완료
+- [x] Step 11 완료
 
 ---
 
