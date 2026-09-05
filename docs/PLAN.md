@@ -101,7 +101,7 @@ Payment는 별도의 휘발성 메모리 버퍼를 새로 만들지 않는다. K
 - [x] Step 10. Payment Consumer 구현
 - [x] Step 11. 전체 End-to-End 검증
 - [x] Step 11.5. Click Consumer Redis 배치 Dedup 리팩터링
-- [ ] Step 11.6. Payment Consumer Kafka 배치 마이크로 배치 리팩터링
+- [x] Step 11.6. Payment Consumer Kafka 배치 마이크로 배치 리팩터링
 - [ ] Step 11.7. Prometheus & Grafana 모니터링 구축
 - [ ] Step 12. 장애 및 복구 테스트
 - [ ] Step 13. 부하 테스트 및 운영 검증
@@ -1597,7 +1597,7 @@ refactor(consumer): batch payment events by kafka batch
 - Unit / Integration / Runtime 검증 통과
 - 별도 Git Commit 완료
 
-- [ ] Step 11.6 완료
+- [x] Step 11.6 완료
 
 ---
 

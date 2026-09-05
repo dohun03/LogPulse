@@ -5,17 +5,17 @@ import { PaymentEventsConsumer } from './payment-events.consumer';
 
 describe('PaymentEventsConsumer', () => {
   let consumer: PaymentEventsConsumer;
-  let isDuplicate: jest.Mock;
-  let markProcessed: jest.Mock;
+  let batchGetExisting: jest.Mock;
+  let batchMarkIfAbsent: jest.Mock;
   let insertPaymentEvents: jest.Mock;
   let dlqSend: jest.Mock;
 
-  const envelope = () => ({
-    eventId: 'evt-pay-1',
+  const envelope = (eventId: string) => ({
+    eventId,
     ingestedAt: '2026-09-03T00:00:00.000Z',
     payload: {
-      eventId: 'evt-pay-1',
-      orderId: 'order-55231',
+      eventId,
+      orderId: `order-${eventId}`,
       userId: 'user-1001',
       amount: 49900,
       currency: 'KRW',
@@ -27,21 +27,21 @@ describe('PaymentEventsConsumer', () => {
 
   const internals = (c: PaymentEventsConsumer) =>
     c as unknown as {
-      processMessage: (
-        message: { value: Buffer | null; offset: string },
-        resolveOffset: (offset: string) => void,
+      processBatch: (envelopes: unknown[]) => Promise<void>;
+      sendToDlq: (
+        events: unknown[],
+        reason: string,
       ) => Promise<void>;
       toPaymentRow: (e: unknown) => Record<string, unknown>;
     };
 
-  const message = () => ({
-    value: Buffer.from(JSON.stringify(envelope())),
-    offset: '10',
-  });
-
   beforeEach(() => {
-    isDuplicate = jest.fn().mockResolvedValue(false);
-    markProcessed = jest.fn().mockResolvedValue(undefined);
+    batchGetExisting = jest
+      .fn()
+      .mockResolvedValue(new Set());
+    batchMarkIfAbsent = jest
+      .fn()
+      .mockResolvedValue(new Set());
     insertPaymentEvents = jest
       .fn()
       .mockResolvedValue(undefined);
@@ -49,8 +49,8 @@ describe('PaymentEventsConsumer', () => {
 
     consumer = new PaymentEventsConsumer(
       {
-        isDuplicate,
-        markProcessed,
+        batchGetExisting,
+        batchMarkIfAbsent,
       } as unknown as RedisDedupService,
 
       {
@@ -65,11 +65,13 @@ describe('PaymentEventsConsumer', () => {
 
   describe('toPaymentRow', () => {
     it('envelope을 ClickHouse row로 매핑하고 DateTime을 변환한다', () => {
-      const row = internals(consumer).toPaymentRow(envelope());
+      const row = internals(consumer).toPaymentRow(
+        envelope('evt-pay-1'),
+      );
 
       expect(row).toEqual({
         event_id: 'evt-pay-1',
-        order_id: 'order-55231',
+        order_id: 'order-evt-pay-1',
         user_id: 'user-1001',
         amount: 49900,
         currency: 'KRW',
@@ -81,68 +83,142 @@ describe('PaymentEventsConsumer', () => {
     });
   });
 
-  describe('processMessage', () => {
-    it('신규 이벤트: 저장 → 완료표시 → offset resolve', async () => {
-      const resolveOffset = jest.fn();
+  describe('processBatch', () => {
+    it('신규 이벤트: Bulk Insert 1회 → 완료 마킹 1회', async () => {
+      await internals(consumer).processBatch([
+        envelope('evt-1'),
+        envelope('evt-2'),
+      ]);
 
-      await internals(consumer).processMessage(
-        message(),
-        resolveOffset,
-      );
-
-      expect(isDuplicate).toHaveBeenCalledWith(
-        'payment',
-        'evt-pay-1',
-      );
       expect(insertPaymentEvents).toHaveBeenCalledTimes(1);
-      expect(markProcessed).toHaveBeenCalledTimes(1);
-      expect(resolveOffset).toHaveBeenCalledWith('10');
+      expect(batchMarkIfAbsent).toHaveBeenCalledTimes(1);
       expect(dlqSend).not.toHaveBeenCalled();
+      expect(batchMarkIfAbsent).toHaveBeenCalledWith(
+        'payment',
+        ['evt-1', 'evt-2'],
+        86400,
+      );
     });
 
-    it('중복 이벤트: 저장하지 않고 offset만 resolve', async () => {
-      isDuplicate.mockResolvedValue(true);
-      const resolveOffset = jest.fn();
+    it('batch 내부 동일 eventId 중복을 제거한다', async () => {
+      await internals(consumer).processBatch([
+        envelope('evt-1'),
+        envelope('evt-1'),
+        envelope('evt-2'),
+      ]);
 
-      await internals(consumer).processMessage(
-        message(),
-        resolveOffset,
+      const rows = insertPaymentEvents.mock.calls[0][0];
+      expect(rows).toHaveLength(2);
+      expect(batchGetExisting).toHaveBeenCalledWith(
+        'payment',
+        ['evt-1', 'evt-2'],
       );
+    });
+
+    it('Redis DUPLICATE를 제외하고 신규만 처리한다', async () => {
+      batchGetExisting.mockResolvedValue(
+        new Set(['evt-2']),
+      );
+
+      await internals(consumer).processBatch([
+        envelope('evt-1'),
+        envelope('evt-2'),
+      ]);
+
+      const rows = insertPaymentEvents.mock.calls[0][0];
+      expect(
+        rows.map(
+          (r: Record<string, unknown>) => r.event_id,
+        ),
+      ).toEqual(['evt-1']);
+      expect(batchMarkIfAbsent).toHaveBeenCalledWith(
+        'payment',
+        ['evt-1'],
+        86400,
+      );
+    });
+
+    it('모두 DUPLICATE면 Insert와 완료 마킹을 수행하지 않는다', async () => {
+      batchGetExisting.mockResolvedValue(
+        new Set(['evt-1', 'evt-2']),
+      );
+
+      await internals(consumer).processBatch([
+        envelope('evt-1'),
+        envelope('evt-2'),
+      ]);
 
       expect(insertPaymentEvents).not.toHaveBeenCalled();
-      expect(markProcessed).not.toHaveBeenCalled();
-      expect(resolveOffset).toHaveBeenCalledWith('10');
-      expect(dlqSend).not.toHaveBeenCalled();
+      expect(batchMarkIfAbsent).not.toHaveBeenCalled();
     });
 
-    it('ClickHouse 저장이 최종 실패하면 DLQ로 이관 후 offset resolve', async () => {
+    it('Redis Batch Read 실패 시 Fail-Closed로 throw한다', async () => {
+      batchGetExisting.mockRejectedValue(
+        new Error('redis down'),
+      );
+
+      await expect(
+        internals(consumer).processBatch([
+          envelope('evt-1'),
+        ]),
+      ).rejects.toThrow('redis down');
+
+      expect(insertPaymentEvents).not.toHaveBeenCalled();
+    });
+
+    it('ClickHouse Bulk Insert 실패 시 Retry 후 DLQ 이관, 완료 마킹은 하지 않는다', async () => {
       insertPaymentEvents.mockRejectedValue(
         new Error('clickhouse down'),
       );
-      const resolveOffset = jest.fn();
 
-      await internals(consumer).processMessage(
-        message(),
-        resolveOffset,
-      );
+      await internals(consumer).processBatch([
+        envelope('evt-1'),
+        envelope('evt-2'),
+      ]);
 
-      expect(dlqSend).toHaveBeenCalledTimes(1);
-      expect(markProcessed).not.toHaveBeenCalled();
-      expect(resolveOffset).toHaveBeenCalledWith('10');
+      // 최초 1회 + 재시도 maxRetry(3) = 총 4회
+      expect(insertPaymentEvents).toHaveBeenCalledTimes(4);
+      expect(dlqSend).toHaveBeenCalledTimes(2);
+      expect(batchMarkIfAbsent).not.toHaveBeenCalled();
     });
 
-    it('Redis isDuplicate가 계속 실패하면(Fail-Closed) throw한다', async () => {
-      isDuplicate.mockRejectedValue(new Error('redis down'));
-      const resolveOffset = jest.fn();
+    it('DLQ 최종 실패 시 예외를 전파한다', async () => {
+      insertPaymentEvents.mockRejectedValue(
+        new Error('clickhouse down'),
+      );
+      dlqSend.mockRejectedValue(new Error('dlq down'));
 
       await expect(
-        internals(consumer).processMessage(
-          message(),
-          resolveOffset,
-        ),
+        internals(consumer).processBatch([
+          envelope('evt-1'),
+        ]),
+      ).rejects.toThrow('dlq down');
+    });
+
+    it('ClickHouse 성공 후 Redis 완료 마킹 실패 시 Fail-Closed로 throw한다', async () => {
+      batchMarkIfAbsent.mockRejectedValue(
+        new Error('redis down'),
+      );
+
+      await expect(
+        internals(consumer).processBatch([
+          envelope('evt-1'),
+        ]),
       ).rejects.toThrow('redis down');
 
-      expect(resolveOffset).not.toHaveBeenCalled();
+      expect(insertPaymentEvents).toHaveBeenCalledTimes(1);
+      expect(dlqSend).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('sendToDlq', () => {
+    it('각 이벤트를 DLQ로 전송한다', async () => {
+      await internals(consumer).sendToDlq(
+        [envelope('evt-1'), envelope('evt-2')],
+        'reason',
+      );
+
+      expect(dlqSend).toHaveBeenCalledTimes(2);
     });
   });
 });

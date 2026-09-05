@@ -569,8 +569,6 @@ KAFKA_CLIENT_ID=logpulse-api-server-2
 | `CLICKHOUSE_PASSWORD` | string | 필수 | 적재용 계정 비밀번호 |
 | `CLICK_BATCH_MAX_SIZE` | number | 500 | click 배치 최대 건수 |
 | `CLICK_BATCH_FLUSH_MS` | number | 1000 | click 배치 최대 대기 시간 |
-| `PAYMENT_BATCH_MAX_SIZE` | number | 100 | payment 배치 최대 건수 |
-| `PAYMENT_BATCH_FLUSH_MS` | number | 500 | payment 배치 최대 대기 시간 |
 | `PAYMENT_MAX_RETRY` | number | 3 | payment 적재 실패 최대 재시도 |
 | `KAFKA_PAYMENT_DLQ_TOPIC` | string | `payment-events-dlq` | payment DLQ 토픽 |
 
@@ -1991,6 +1989,22 @@ import { ClickHouseWriterService } from '../clickhouse/clickhouse-writer.service
 import { DlqProducerService } from '../dlq/dlq-producer.service';
 import { retryWithBackoff } from '../common/retry.util';
 
+// Kafka에서 가져오는 '결제 이벤트' 인터페이스
+interface PaymentEventEnvelope {
+  eventId: string;
+  ingestedAt: string;
+  payload: {
+    eventId: string;
+    orderId: string;
+    userId: string;
+    amount: number;
+    currency: string;
+    paymentMethod: string;
+    status: 'completed' | 'failed' | 'canceled';
+    occurredAt: string;
+  };
+}
+
 @Injectable()
 export class PaymentEventsConsumer
   implements OnModuleInit
@@ -2045,97 +2059,152 @@ export class PaymentEventsConsumer
         resolveOffset,
         heartbeat,
         commitOffsetsIfNecessary,
+        uncommittedOffsets,
       }: EachBatchPayload) => {
-        for (const message of batch.messages) {
-          const envelope =
-            JSON.parse(
-              message.value!.toString(),
-            );
+        // 배치 전체를 파싱한다.
+        const envelopes =
+          batch.messages.map(
+            (message) =>
+              JSON.parse(
+                message.value!.toString(),
+              ) as PaymentEventEnvelope,
+          );
 
-          const isDuplicate =
-            await retryWithBackoff(
-              () =>
-                this.redisDedup
-                  .isDuplicate(
-                    'payment',
-                    envelope.eventId,
-                  ),
-              3,
-            );
-
-          if (isDuplicate) {
-            resolveOffset(
-              message.offset,
-            );
-            continue;
-          }
-
-          const row =
-            this.toPaymentRow(envelope);
-
-          try {
-            await retryWithBackoff(
-              () =>
-                this.clickhouseWriter
-                  .insertPaymentEvents([
-                    row,
-                  ]),
-              Number(
-                process.env
-                  .PAYMENT_MAX_RETRY ??
-                  3,
-              ),
-            );
-
-            await retryWithBackoff(
-              () =>
-                this.redisDedup
-                  .markProcessed(
-                    'payment',
-                    envelope.eventId,
-                    Number(
-                      process.env
-                        .REDIS_PAYMENT_DEDUP_TTL_SEC ??
-                        86400,
-                    ),
-                  ),
-              3,
-            );
-
-            resolveOffset(
-              message.offset,
-            );
-          } catch (err) {
-            this.logger.error(
-              {
-                eventId:
-                  envelope.eventId,
-                topic:
-                  'payment-events',
-                err,
-              },
-              'ClickHouse 적재 최종 실패, DLQ 이관',
-            );
-
-            await this.dlqProducer.send(
-              envelope,
-              (err as Error).message,
-            );
-
-            resolveOffset(
-              message.offset,
-            );
-          }
-        }
+        // Kafka batch 자체를 처리 단위로 사용한다.
+        // Fail-Closed 실패 시 예외가 전파되어 offset을 커밋하지 않는다.
+        await this.processBatch(envelopes);
 
         await heartbeat();
-        await commitOffsetsIfNecessary();
+
+        // 정상 저장 / DUPLICATE / DLQ 성공으로
+        // 안전 종료된 offset을 resolve 후 명시적으로 커밋한다.
+        for (const message of batch.messages) {
+          resolveOffset(message.offset);
+        }
+        await commitOffsetsIfNecessary(
+          uncommittedOffsets(),
+        );
       },
     });
   }
 
+  // 내부 중복 제거 → Redis Batch Read →
+  // ClickHouse Bulk Insert 1회 →
+  // Redis 완료 마킹 Pipeline 순서를 지킨다.
+  private async processBatch(
+    envelopes: PaymentEventEnvelope[],
+  ): Promise<void> {
+    // 1) 동일 batch 내부 eventId 중복 제거
+    const unique =
+      new Map<string, PaymentEventEnvelope>();
+
+    for (const envelope of envelopes) {
+      if (!unique.has(envelope.eventId)) {
+        unique.set(envelope.eventId, envelope);
+      }
+    }
+
+    const uniqueList = [...unique.values()];
+
+    // 2) Redis Batch Read(MGET). Fail-Closed.
+    const existing = await retryWithBackoff(
+      () =>
+        this.redisDedup.batchGetExisting(
+          'payment',
+          uniqueList.map(
+            (envelope) => envelope.eventId,
+          ),
+        ),
+      Number(
+        process.env.PAYMENT_MAX_RETRY ?? 3,
+      ),
+    );
+
+    // 3) 기존 key(DUPLICATE) 제외 → 신규 이벤트
+    const newEvents = uniqueList.filter(
+      (envelope) =>
+        !existing.has(envelope.eventId),
+    );
+
+    if (newEvents.length === 0) {
+      return;
+    }
+
+    // 4) ClickHouse Bulk Insert 1회
+    const rows = newEvents.map(
+      (envelope) =>
+        this.toPaymentRow(envelope),
+    );
+
+    try {
+      await retryWithBackoff(
+        () =>
+          this.clickhouseWriter
+            .insertPaymentEvents(rows),
+        Number(
+          process.env.PAYMENT_MAX_RETRY ?? 3,
+        ),
+      );
+    } catch (err) {
+      // Bulk Insert 최종 실패 → 유효 이벤트 DLQ 이관.
+      // (배치 내부 DUPLICATE 이벤트는 DLQ로 보내지 않는다.)
+      const reason = (err as Error).message;
+
+      // 민감한 원본 값(orderId/amount 등)은
+      // 로그에 남기지 않는다.
+      this.logger.error(
+        {
+          eventCount: newEvents.length,
+          topic: 'payment-events',
+          error: reason,
+        },
+        'ClickHouse Bulk Insert 최종 실패, 유효 이벤트 DLQ 이관',
+      );
+
+      await this.sendToDlq(newEvents, reason);
+      return;
+    }
+
+    // 5) ClickHouse 성공 후 Redis 완료 마킹 Pipeline.
+    //    Fail-Closed: 실패 시 예외 전파 → offset 미커밋.
+    await retryWithBackoff(
+      () =>
+        this.redisDedup.batchMarkIfAbsent(
+          'payment',
+          newEvents.map(
+            (envelope) => envelope.eventId,
+          ),
+          Number(
+            process.env
+              .REDIS_PAYMENT_DEDUP_TTL_SEC ??
+            86400,
+          ),
+        ),
+      Number(
+        process.env.PAYMENT_MAX_RETRY ?? 3,
+      ),
+    );
+  }
+
+  // 유효 이벤트를 DLQ로 이관한다.
+  // Retry 후에도 실패하면 예외를 전파해 offset을 커밋하지 않는다.
+  private async sendToDlq(
+    events: PaymentEventEnvelope[],
+    reason: string,
+  ): Promise<void> {
+    for (const event of events) {
+      await retryWithBackoff(
+        () =>
+          this.dlqProducer.send(event, reason),
+        Number(
+          process.env.PAYMENT_MAX_RETRY ?? 3,
+        ),
+      );
+    }
+  }
+
   private toPaymentRow(
-    envelope: any,
+    envelope: PaymentEventEnvelope,
   ) {
     const p = envelope.payload;
 
