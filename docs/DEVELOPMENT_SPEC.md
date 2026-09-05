@@ -1744,6 +1744,22 @@ import {
 import { RedisDedupService } from '../redis/redis-dedup.service';
 import { ClickHouseWriterService } from '../clickhouse/clickhouse-writer.service';
 import { BatchBuffer } from '../clickhouse/batch-buffer';
+import { retryWithBackoff } from '../common/retry.util';
+
+// Kafka에서 가져오는 '클릭 이벤트' 인터페이스
+interface ClickEventEnvelope {
+  eventId: string;
+  ingestedAt: string;
+  payload: {
+    userId: string;
+    sessionId: string;
+    eventType: 'product_click' | 'page_view';
+    productId?: string;
+    pageUrl: string;
+    occurredAt: string;
+    metadata?: Record<string, unknown>;
+  };
+}
 
 @Injectable()
 export class ClickEventsConsumer
@@ -1810,32 +1826,23 @@ export class ClickEventsConsumer
         resolveOffset,
         heartbeat,
       }: EachBatchPayload) => {
-        for (const message of batch.messages) {
-          const envelope =
-            JSON.parse(
-              message.value!.toString(),
-            );
-
-          const dedupResult =
-            await this.redisDedup.checkAndMark(
-              'click',
-              envelope.eventId,
-              Number(
-                process.env
-                  .REDIS_CLICK_DEDUP_TTL_SEC ??
-                  600,
+        // 배치 전체를 파싱한다.
+        const envelopes =
+          batch.messages.map(
+            (message) =>
+              JSON.parse(
+                message.value!.toString(),
               ),
-            );
+          );
 
-          if (
-            dedupResult === 'NEW' ||
-            dedupResult === 'ERROR'
-          ) {
-            this.buffer.add(
-              this.toClickRow(envelope),
-            );
-          }
+        // Kafka batch 단위 Redis 배치 Dedup 후
+        // 선점 성공 이벤트만 버퍼에 적재한다.
+        await this.processClickBatch(
+          envelopes,
+        );
 
+        // 전체 메시지 오프셋을 resolve한다.
+        for (const message of batch.messages) {
           resolveOffset(message.offset);
         }
 
@@ -1844,7 +1851,102 @@ export class ClickEventsConsumer
     });
   }
 
-  private toClickRow(envelope: any) {
+  // Kafka batch 단위로 Redis 배치 Dedup 후
+  // 선점 성공 이벤트만 BatchBuffer에 추가한다.
+  private async processClickBatch(
+    envelopes: ClickEventEnvelope[],
+  ): Promise<void> {
+    const claimed =
+      await this.dedupeAndClaim(envelopes);
+
+    for (const envelope of claimed) {
+      this.buffer.add(this.toClickRow(envelope));
+    }
+  }
+
+  // 내부 중복 제거 → Redis MGET →
+  // 신규 후보 Pipeline SET NX 선점 순으로 진행한다.
+  private async dedupeAndClaim(
+    envelopes: ClickEventEnvelope[],
+  ): Promise<ClickEventEnvelope[]> {
+    // 1) 동일 batch 내부 eventId 중복 제거
+    const unique =
+      new Map<string, ClickEventEnvelope>();
+
+    for (const envelope of envelopes) {
+      if (!unique.has(envelope.eventId)) {
+        unique.set(envelope.eventId, envelope);
+      }
+    }
+
+    const uniqueList = [...unique.values()];
+    const eventIds = uniqueList.map(
+      (envelope) => envelope.eventId,
+    );
+
+    // 2) Redis Batch Read(MGET) 조회.
+    //    실패 시 fail-open 처리.
+    let existing: Set<string>;
+    try {
+      existing = await retryWithBackoff(
+        () =>
+          this.redisDedup.batchGetExisting(
+            'click',
+            eventIds,
+          ),
+        3,
+        0,
+      );
+    } catch (err) {
+      this.logger.warn(
+        'Redis Batch Read 실패(fail-open)',
+      );
+      return uniqueList;
+    }
+
+    // 3) 기존 key(DUPLICATE) 제외 → 신규 후보
+    const candidates = uniqueList.filter(
+      (envelope) =>
+        !existing.has(envelope.eventId),
+    );
+
+    if (candidates.length === 0) {
+      return [];
+    }
+
+    // 4) Pipeline SET NX 선점.
+    //    실패 시 fail-open 처리.
+    let claimed: Set<string>;
+    try {
+      claimed =
+        await this.redisDedup.batchMarkIfAbsent(
+          'click',
+          candidates.map(
+            (envelope) => envelope.eventId,
+          ),
+          Number(
+            process.env
+              .REDIS_CLICK_DEDUP_TTL_SEC ??
+            600,
+          ),
+        );
+    } catch (err) {
+      this.logger.warn(
+        'Redis Pipeline 선점 실패(fail-open)',
+      );
+      return candidates;
+    }
+
+    // 5) 최종 선점 성공 이벤트만 반환
+    return candidates.filter(
+      (envelope) =>
+        claimed.has(envelope.eventId),
+    );
+  }
+
+  private toClickRow(
+    envelope: ClickEventEnvelope,
+  ) {
     const p = envelope.payload;
 
     return {
@@ -2135,6 +2237,69 @@ export class RedisDedupService {
       ttlSec,
       'NX',
     );
+  }
+
+  // Kafka batch 단위 Redis Batch Read(MGET):
+  // 이미 존재하는 eventId 집합을 반환한다.
+  async batchGetExisting(
+    topic: string,
+    eventIds: string[],
+  ): Promise<Set<string>> {
+    if (eventIds.length === 0) {
+      return new Set();
+    }
+
+    const keys = eventIds.map(
+      (eventId) =>
+        `dedup:${topic}:${eventId}`,
+    );
+
+    const values = await this.redis.mget(...keys);
+
+    const existing = new Set<string>();
+    values.forEach((value, index) => {
+      if (value !== null) {
+        existing.add(eventIds[index]);
+      }
+    });
+
+    return existing;
+  }
+
+  // Kafka batch 단위 Redis 선점(Pipeline SET NX):
+  // 신규 선점에 성공한 eventId 집합을 반환한다.
+  async batchMarkIfAbsent(
+    topic: string,
+    eventIds: string[],
+    ttlSec: number,
+  ): Promise<Set<string>> {
+    if (eventIds.length === 0) {
+      return new Set();
+    }
+
+    const pipeline = this.redis.pipeline();
+    for (const eventId of eventIds) {
+      pipeline.set(
+        `dedup:${topic}:${eventId}`,
+        '1',
+        'EX',
+        ttlSec,
+        'NX',
+      );
+    }
+
+    const results = await pipeline.exec();
+
+    const claimed = new Set<string>();
+    (results ?? []).forEach(
+      ([error, result], index) => {
+        if (!error && result === 'OK') {
+          claimed.add(eventIds[index]);
+        }
+      },
+    );
+
+    return claimed;
   }
 }
 ```

@@ -36,4 +36,46 @@ export class RedisDedupService implements OnModuleDestroy {
   async markProcessed(topic: string, eventId: string, ttlSec: number): Promise<void> {
     await this.redis.set(`dedup:${topic}:${eventId}`, '1', 'EX', ttlSec, 'NX');
   }
+
+  // Kafka batch 단위 Redis Batch Read(MGET): 이미 존재하는 eventId 집합을 반환한다.
+  async batchGetExisting(topic: string, eventIds: string[]): Promise<Set<string>> {
+    if (eventIds.length === 0) {
+      return new Set();
+    }
+
+    const keys = eventIds.map((eventId) => `dedup:${topic}:${eventId}`);
+    const values = await this.redis.mget(...keys);
+
+    const existing = new Set<string>();
+    values.forEach((value, index) => {
+      if (value !== null) {
+        existing.add(eventIds[index]);
+      }
+    });
+
+    return existing;
+  }
+
+  // Kafka batch 단위 Redis 선점(Pipeline SET NX): 신규 선점에 성공한 eventId 집합을 반환한다.
+  async batchMarkIfAbsent(topic: string, eventIds: string[], ttlSec: number): Promise<Set<string>> {
+    if (eventIds.length === 0) {
+      return new Set();
+    }
+
+    const pipeline = this.redis.pipeline();
+    for (const eventId of eventIds) {
+      pipeline.set(`dedup:${topic}:${eventId}`, '1', 'EX', ttlSec, 'NX');
+    }
+
+    const results = await pipeline.exec();
+
+    const claimed = new Set<string>();
+    (results ?? []).forEach(([error, result], index) => {
+      if (!error && result === 'OK') {
+        claimed.add(eventIds[index]);
+      }
+    });
+
+    return claimed;
+  }
 }

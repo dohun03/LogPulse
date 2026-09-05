@@ -63,19 +63,16 @@ export class ClickEventsConsumer implements OnModuleInit, OnModuleDestroy {
     await this.consumer.run({
       autoCommit: clickConsumerConfig.autoCommit,
       eachBatch: async ({ batch, resolveOffset, heartbeat }: EachBatchPayload) => {
-        // 배치의 각 메시지 개별 처리 (버퍼에 저장)
+        // 배치 전체를 파싱한다.
+        const envelopes = batch.messages.map(
+          (message) => JSON.parse(message.value!.toString()) as ClickEventEnvelope,
+        );
+
+        // Kafka batch 단위 Redis 배치 Dedup 후 선점 성공 이벤트만 버퍼에 적재한다.
+        await this.processClickBatch(envelopes);
+
+        // 전체 메시지 오프셋을 resolve한다 (중복/에러 포함: Click은 Best-effort).
         for (const message of batch.messages) {
-          const envelope = JSON.parse(message.value!.toString()) as ClickEventEnvelope;
-
-          // Redis 중복 체크 및 마킹
-          const dedupResult = await this.redisDedup.checkAndMark('click', envelope.eventId, clickConsumerConfig.dedupTtlSec);
-
-          // 신규 이벤트이거나 에러일 경우에만 처리 진행
-          if (dedupResult === 'NEW' || dedupResult === 'ERROR') {
-            this.buffer.add(this.toClickRow(envelope));
-          }
-
-          // 오프셋 커밋
           resolveOffset(message.offset);
         }
 
@@ -90,6 +87,66 @@ export class ClickEventsConsumer implements OnModuleInit, OnModuleDestroy {
   // NestJS 종료시 Kafka 연결 해제
   async onModuleDestroy() {
     await this.consumer.disconnect();
+  }
+
+  // Kafka batch 단위로 Redis 배치 Dedup 후 선점 성공 이벤트만 BatchBuffer에 추가한다.
+  private async processClickBatch(envelopes: ClickEventEnvelope[]): Promise<void> {
+    const claimed = await this.dedupeAndClaim(envelopes);
+
+    for (const envelope of claimed) {
+      this.buffer.add(this.toClickRow(envelope));
+    }
+  }
+
+  // 내부 중복 제거 → Redis MGET → 신규 후보 Pipeline SET NX 선점 순으로 진행한다.
+  private async dedupeAndClaim(envelopes: ClickEventEnvelope[]): Promise<ClickEventEnvelope[]> {
+    // 1) 동일 batch 내부 eventId 중복 제거 (첫 등장만 유지)
+    const unique = new Map<string, ClickEventEnvelope>();
+    for (const envelope of envelopes) {
+      if (!unique.has(envelope.eventId)) {
+        unique.set(envelope.eventId, envelope);
+      }
+    }
+    const uniqueList = [...unique.values()];
+    const eventIds = uniqueList.map((envelope) => envelope.eventId);
+
+    // 2) Redis Batch Read(MGET): 기존 key 조회. 실패 시 fail-open 처리.
+    let existing: Set<string>;
+    try {
+      existing = await retryWithBackoff(
+        () => this.redisDedup.batchGetExisting('click', eventIds),
+        3,
+        0,
+      );
+    } catch (err) {
+      this.logger.warn(`Redis Batch Read 실패(fail-open): ${(err as Error).message}`);
+      return uniqueList;
+    }
+
+    // 3) 기존 key(DUPLICATE) 제외 → 신규 후보
+    const candidates = uniqueList.filter(
+      (envelope) => !existing.has(envelope.eventId),
+    );
+
+    if (candidates.length === 0) {
+      return [];
+    }
+
+    // 4) Pipeline SET NX 선점. 실패 시 fail-open 처리.
+    let claimed: Set<string>;
+    try {
+      claimed = await this.redisDedup.batchMarkIfAbsent(
+        'click',
+        candidates.map((envelope) => envelope.eventId),
+        clickConsumerConfig.dedupTtlSec,
+      );
+    } catch (err) {
+      this.logger.warn(`Redis Pipeline 선점 실패(fail-open): ${(err as Error).message}`);
+      return candidates;
+    }
+
+    // 5) 최종 선점 성공 이벤트만 반환
+    return candidates.filter((envelope) => claimed.has(envelope.eventId));
   }
 
   // 버퍼에 데이터가 쌓여서 방출될 때 실행되는 실제 DB 저장 함수

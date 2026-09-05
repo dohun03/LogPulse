@@ -4,6 +4,8 @@ jest.mock('ioredis', () => {
   return jest.fn().mockImplementation(() => ({
     set: jest.fn(),
     exists: jest.fn(),
+    mget: jest.fn(),
+    pipeline: jest.fn(),
     disconnect: jest.fn(),
   }));
 });
@@ -16,6 +18,8 @@ describe('RedisDedupService', () => {
       redis: {
         set: jest.Mock;
         exists: jest.Mock;
+        mget: jest.Mock;
+        pipeline: jest.Mock;
         disconnect: jest.Mock;
       };
     }).redis;
@@ -90,5 +94,62 @@ describe('RedisDedupService', () => {
     );
 
     expect(result).toBe(false);
+  });
+
+  it('batchGetExisting: 존재하는 eventId만 집합으로 반환한다', async () => {
+    redisMock().mget.mockResolvedValue(['1', null, '1']);
+
+    const result = await service.batchGetExisting(
+      'click',
+      ['evt-1', 'evt-2', 'evt-3'],
+    );
+
+    expect(result).toEqual(new Set(['evt-1', 'evt-3']));
+    expect(redisMock().mget).toHaveBeenCalledWith(
+      'dedup:click:evt-1',
+      'dedup:click:evt-2',
+      'dedup:click:evt-3',
+    );
+  });
+
+  it('batchGetExisting: 빈 입력이면 빈 집합을 반환한다', async () => {
+    const result = await service.batchGetExisting('click', []);
+
+    expect(result).toEqual(new Set());
+    expect(redisMock().mget).not.toHaveBeenCalled();
+  });
+
+  it('batchMarkIfAbsent: SET NX 성공(OK)인 key만 집합으로 반환한다', async () => {
+    const set = jest.fn();
+    const exec = jest.fn().mockResolvedValue([
+      [null, 'OK'],
+      [null, null],
+      [null, 'OK'],
+    ]);
+    redisMock().pipeline.mockReturnValue({ set, exec });
+
+    const result = await service.batchMarkIfAbsent(
+      'click',
+      ['evt-1', 'evt-2', 'evt-3'],
+      600,
+    );
+
+    expect(result).toEqual(new Set(['evt-1', 'evt-3']));
+    expect(set).toHaveBeenCalledTimes(3);
+    expect(set).toHaveBeenNthCalledWith(
+      1,
+      'dedup:click:evt-1',
+      '1',
+      'EX',
+      600,
+      'NX',
+    );
+  });
+
+  it('batchMarkIfAbsent: 빈 입력이면 빈 집합을 반환한다', async () => {
+    const result = await service.batchMarkIfAbsent('click', [], 600);
+
+    expect(result).toEqual(new Set());
+    expect(redisMock().pipeline).not.toHaveBeenCalled();
   });
 });
