@@ -2,6 +2,7 @@ export async function retryWithBackoff<T>(
   fn: () => Promise<T>,
   maxRetries: number,
   baseDelayMs = 200,
+  onRetry?: (attempt: number) => void,
 ): Promise<T> {
   let lastError: unknown;
 
@@ -14,6 +15,8 @@ export async function retryWithBackoff<T>(
       if (attempt === maxRetries) {
         break;
       }
+
+      onRetry?.(attempt + 1);
 
       const delay = baseDelayMs * 2 ** attempt;
 

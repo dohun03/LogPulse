@@ -102,7 +102,7 @@ Payment는 별도의 휘발성 메모리 버퍼를 새로 만들지 않는다. K
 - [x] Step 11. 전체 End-to-End 검증
 - [x] Step 11.5. Click Consumer Redis 배치 Dedup 리팩터링
 - [x] Step 11.6. Payment Consumer Kafka 배치 마이크로 배치 리팩터링
-- [ ] Step 11.7. Prometheus & Grafana 모니터링 구축
+- [x] Step 11.7. Prometheus & Grafana 모니터링 구축
 - [ ] Step 12. 장애 및 복구 테스트
 - [ ] Step 13. 부하 테스트 및 운영 검증
 - [ ] Step 14. 최종 정리 및 문서화
@@ -1650,7 +1650,7 @@ Step 12 장애 검증과 Step 13 부하 테스트에서 배치 처리 변경의 
 feat(monitoring): add prometheus metrics and grafana dashboard
 ```
 
-- [ ] Step 11.7 완료
+- [x] Step 11.7 완료
 
 ---
 

@@ -6,6 +6,7 @@ import { ClickhouseModule } from './clickhouse/clickhouse.module';
 import { DlqProducerService } from './dlq/dlq-producer.service';
 import { ClickEventsConsumer } from './consumers/click-events.consumer';
 import { PaymentEventsConsumer } from './consumers/payment-events.consumer';
+import { MetricsModule } from './metrics/metrics.module';
 
 const consumerRole = process.env.CONSUMER_ROLE ?? 'click';
 
@@ -25,6 +26,7 @@ const consumerProviders =
     }),
     RedisModule,
     ClickhouseModule,
+    MetricsModule,
   ],
   providers: [DlqProducerService, ...consumerProviders],
 })

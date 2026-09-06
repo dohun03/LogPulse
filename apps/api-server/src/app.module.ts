@@ -6,6 +6,8 @@ import { LoggerModule } from 'nestjs-pino';
 import { EventsModule } from './events/events.module';
 import { HealthModule } from './health/health.module';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
+import { MetricsInterceptor } from './metrics/metrics.interceptor';
+import { MetricsModule } from './metrics/metrics.module';
 
 @Module({
   imports: [
@@ -21,11 +23,16 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
     }),
     EventsModule,
     HealthModule,
+    MetricsModule,
   ],
   providers: [
     {
       provide: APP_INTERCEPTOR,
       useClass: LoggingInterceptor,
+    },
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: MetricsInterceptor,
     },
   ],
 })

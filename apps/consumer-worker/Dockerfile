@@ -27,4 +27,5 @@ COPY --from=build /app/libs/shared/dist ./libs/shared/dist
 COPY --from=build /app/apps/consumer-worker/package.json ./apps/consumer-worker/package.json
 COPY --from=build /app/apps/consumer-worker/dist ./apps/consumer-worker/dist
 
+EXPOSE 9100
 CMD ["node", "apps/consumer-worker/dist/main.js"]

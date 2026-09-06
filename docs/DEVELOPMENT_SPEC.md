@@ -32,6 +32,8 @@
 13. 테스트 전략 및 체크리스트
 14. 로컬 개발 실행 절차
 15. 부록: 공통 타입 정의 전체 (`libs/shared`)
+16. 모니터링 (Prometheus & Grafana)
+17. 최종 구성 검증 기준
 
 ---
 
@@ -49,6 +51,7 @@
 | Analytics DB | ClickHouse 25.8.x LTS | `@clickhouse/client` 공식 Node 클라이언트 |
 | 검증 | class-validator / class-transformer | Fastify에서도 동일하게 동작 |
 | 로깅 | Pino | `nestjs-pino` 사용 |
+| 모니터링 | Prometheus + Grafana | `prom-client`로 지표 노출, Grafana 대시보드 1개 |
 | 컨테이너 | Docker / Docker Compose | 로컬 개발 및 단일 호스트 검증 |
 | 부하 테스트 | k6 | API 및 Kafka 파이프라인 부하 검증 |
 
@@ -131,6 +134,7 @@
     "class-transformer": "^0.5.1",
     "nestjs-pino": "^4.0.0",
     "pino-http": "^9.0.0",
+    "prom-client": "^15.1.3",
     "uuid": "^9.0.0"
   }
 }
@@ -147,16 +151,19 @@
     "@nestjs/core": "^10.0.0",
     "@nestjs/common": "^10.0.0",
     "@nestjs/config": "^3.0.0",
+    "@nestjs/platform-fastify": "^10.0.0",
+    "fastify": "^4.26.0",
     "kafkajs": "^2.2.4",
     "ioredis": "^5.4.0",
     "@clickhouse/client": "^1.0.0",
     "nestjs-pino": "^4.0.0",
+    "prom-client": "^15.1.3",
     "uuid": "^9.0.0"
   }
 }
 ```
 
-> `consumer-worker`는 HTTP 엔드포인트가 없는 순수 백그라운드 프로세스이므로 Fastify/Express 어댑터가 필요 없다.
+> `consumer-worker`는 Prometheus `/metrics` 노출을 위해 최소 HTTP 서버(Fastify)만 구동하며, 비즈니스 HTTP 엔드포인트는 제공하지 않는다.
 
 ---
 
@@ -461,10 +468,15 @@ logpulse/
 │   │       │   ├── kafka.module.ts
 │   │       │   ├── kafka-producer.service.ts
 │   │       │   └── kafka.config.ts
-│   │       └── health/
-│   │           ├── health.module.ts
-│   │           ├── health.controller.ts
-│   │           └── kafka.health-indicator.ts
+│   │       ├── health/
+│   │       │   ├── health.module.ts
+│   │       │   ├── health.controller.ts
+│   │       │   └── kafka.health-indicator.ts
+│   │       └── metrics/
+│   │           ├── metrics.module.ts
+│   │           ├── metrics.controller.ts
+│   │           ├── metrics.interceptor.ts
+│   │           └── metrics.ts
 │   │
 │   └── consumer-worker/
 │       └── src/
@@ -484,6 +496,10 @@ logpulse/
 │           │   └── batch-buffer.ts
 │           ├── dlq/
 │           │   └── dlq-producer.service.ts
+│           ├── metrics/
+│           │   ├── metrics.module.ts
+│           │   ├── metrics.controller.ts
+│           │   └── metrics.ts
 │           └── common/
 │               └── retry.util.ts
 │
@@ -505,8 +521,18 @@ logpulse/
 │   │   └── nginx.conf
 │   ├── clickhouse/
 │   │   └── init.sql
-│   └── kafka/
-│       └── create-topics.sh
+│   ├── kafka/
+│   │   └── create-topics.sh
+│   ├── prometheus/
+│   │   └── prometheus.yml
+│   └── grafana/
+│       ├── provisioning/
+│       │   ├── datasources/
+│       │   │   └── datasource.yml
+│       │   └── dashboards/
+│       │       └── dashboards.yml
+│       └── dashboards/
+│           └── logpulse.json
 │
 ├── load-test/
 │   └── k6/
@@ -571,6 +597,7 @@ KAFKA_CLIENT_ID=logpulse-api-server-2
 | `CLICK_BATCH_FLUSH_MS` | number | 1000 | click 배치 최대 대기 시간 |
 | `PAYMENT_MAX_RETRY` | number | 3 | payment 적재 실패 최대 재시도 |
 | `KAFKA_PAYMENT_DLQ_TOPIC` | string | `payment-events-dlq` | payment DLQ 토픽 |
+| `METRICS_PORT` | number | 9100 | Prometheus `/metrics` HTTP 포트 |
 
 ---
 
@@ -806,27 +833,29 @@ bootstrap();
 // apps/consumer-worker/src/main.ts
 
 import { NestFactory } from '@nestjs/core';
+import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.createApplicationContext(AppModule, {
-    bufferLogs: true,
-  });
+  // Prometheus `/metrics` 노출을 위한 최소 HTTP 서버를 띄운다.
+  const app = await NestFactory.create<NestFastifyApplication>(
+    AppModule,
+    new FastifyAdapter(),
+    { bufferLogs: true },
+  );
 
   app.useLogger(app.get(Logger));
+  app.enableShutdownHooks();
 
-  const shutdown = async () => {
-    await app.close();
-    process.exit(0);
-  };
-
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  const port = Number(process.env.METRICS_PORT ?? 9100);
+  await app.listen({ port, host: '0.0.0.0' });
 }
 
 bootstrap();
 ```
+
+> Consumer 로직 자체는 기존과 동일하게 `OnModuleInit` 훅에서 구동되며, HTTP 서버는 Prometheus 스크래핑 용도로만 사용한다.
 
 ---
 
@@ -3272,7 +3301,89 @@ export function buildDedupKey(
 
 ---
 
-# 16. 최종 구성 검증 기준
+# 16. 모니터링 (Prometheus & Grafana)
+
+## 16.1 개요
+
+Step 12(장애 검증)와 Step 13(부하 테스트)에서 배치 처리 변경의 영향을 정량적으로 관찰하기 위한 지표 수집·시각화 구성을 정의한다.
+
+| 구성 요소 | 역할 |
+|---|---|
+| API `/metrics` | API 트래픽(요청 수/상태코드, 응답시간) 노출 |
+| Consumer `/metrics` | Click/Payment 배치·Dedup·DLQ 지표 및 Kafka Lag 노출 |
+| Prometheus | 7개 타깃(API 2대 + Consumer 5대) 스크래핑 |
+| Grafana | 대시보드 1개(`LogPulse 모니터링`) |
+
+## 16.2 스크래핑 타깃
+
+Prometheus는 Docker Compose 내부 네트워크(`logpulse_net`)에서 다음 타깃의 `/metrics`를 스크래핑한다.
+
+```yaml
+# infra/prometheus/prometheus.yml
+scrape_configs:
+  - job_name: 'api-server'
+    static_configs:
+      - targets:
+          - 'api-server-1:3000'
+          - 'api-server-2:3000'
+  - job_name: 'consumer-worker'
+    static_configs:
+      - targets:
+          - 'worker-click-1:9100'
+          - 'worker-click-2:9100'
+          - 'worker-click-3:9100'
+          - 'worker-payment-1:9100'
+          - 'worker-payment-2:9100'
+```
+
+## 16.3 핵심 지표
+
+### API 지표 (`apps/api-server/src/metrics`)
+
+| 지표 | 타입 | 설명 |
+|---|---|---|
+| `api_http_requests_total` | Counter | API 요청 수 (라벨: `status_code`) |
+| `api_http_request_duration_seconds` | Histogram | 응답 시간 (라벨: `method`, `route`) |
+
+> `MetricsInterceptor`가 전역 인터셉터로 등록되어 요청 완료 시 상태코드와 응답시간을 기록한다.
+
+### Consumer 지표 (`apps/consumer-worker/src/metrics`)
+
+| 지표 | 타입 | 대상 | 설명 |
+|---|---|---|---|
+| `click_redis_batch_dedup_total` | Counter | Click | Kafka batch 단위 Redis 배치 Dedup 처리 이벤트 수 |
+| `redis_dedup_fail_open_total` | Counter | Click | Redis Dedup 실패 시 fail-open 처리 횟수 |
+| `click_batch_dropped_total` | Counter | Click | BatchBuffer 적재 최종 실패로 폐기된 이벤트 수 |
+| `redis_dedup_fail_closed_retry_total` | Counter | Payment | Redis Dedup 실패 시 fail-closed 재시도 횟수 |
+| `payment_batch_insert_total` | Counter | Payment | ClickHouse Bulk Insert 성공 횟수 |
+| `payment_batch_insert_failures_total` | Counter | Payment | ClickHouse Bulk Insert 최종 실패 횟수 |
+| `payment_dlq_sent_total` | Counter | Payment | DLQ 발행 성공 횟수 |
+| `payment_dlq_send_failures_total` | Counter | Payment | DLQ 발행 실패 횟수 |
+| `kafka_consumer_lag` | Gauge | 공통 | 파티션별 처리 지연 (라벨: `topic`, `partition`, `consumer_group`) |
+
+> Kafka Consumer Lag는 `eachBatch`에서 `batch.offsetLag()`를 Gauge로 기록하며, 별도 Admin Client 없이 실시간으로 갱신된다.
+
+## 16.4 Grafana 대시보드
+
+`infra/grafana/dashboards/logpulse.json`에 1개의 대시보드(`LogPulse 모니터링`)가 프로비저닝된다.
+
+| 패널 | PromQL |
+|---|---|
+| Kafka Consumer Lag | `sum by (consumer_group, topic) (kafka_consumer_lag)` |
+| API 요청 수 | `sum by (status_code) (rate(api_http_requests_total[1m]))` |
+| API 응답시간 p50/p95/p99 | `histogram_quantile(...)` |
+| Click Batch Dedup 처리량 | `sum(rate(click_redis_batch_dedup_total[1m]))` |
+| Click Redis Fail-Open | `sum(rate(redis_dedup_fail_open_total[1m]))` |
+| Click BatchBuffer Drop | `sum(rate(click_batch_dropped_total[1m]))` |
+| Payment Bulk Insert | `sum(rate(payment_batch_insert_total[1m]))` |
+| Payment Redis Retry | `sum(rate(redis_dedup_fail_closed_retry_total[1m]))` |
+| Payment DLQ 발행 | `sum(rate(payment_dlq_sent_total[1m]))` / 실패 |
+
+과도한 범용 지표나 불필요한 패널은 추가하지 않는다.
+
+---
+
+# 17. 최종 구성 검증 기준
 
 구현 완료 후 아래 표가 모두 만족되면 현재 아키텍처와 개발 명세가 일치한다.
 
@@ -3309,6 +3420,9 @@ export function buildDedupKey(
 | 분석 DB | ClickHouse |
 | 중복 방지 | Redis |
 | 민감 로그 | 마스킹 |
+| 모니터링 | Prometheus 1 + Grafana 1 |
+| API `/metrics` | 2대 노출 |
+| Consumer `/metrics` | 5대 노출 |
 
 ---
 

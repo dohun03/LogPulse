@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'api-server'
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 'api-server-1:3000'
+          - 'api-server-2:3000'
+
+  - job_name: 'consumer-worker'
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 'worker-click-1:9100'
+          - 'worker-click-2:9100'
+          - 'worker-click-3:9100'
+          - 'worker-payment-1:9100'
+          - 'worker-payment-2:9100'

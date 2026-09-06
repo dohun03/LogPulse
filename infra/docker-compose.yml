@@ -67,6 +67,7 @@ x-worker-env: &worker-env
   CLICKHOUSE_DATABASE: logpulse
   CLICKHOUSE_USERNAME: logpulse_writer
   CLICKHOUSE_PASSWORD: logpulse-writer-dev
+  METRICS_PORT: '9100'
   LOG_LEVEL: info
 
 # Worker 공용 설정
@@ -313,12 +314,49 @@ services:
       KAFKA_CLIENT_ID: logpulse-worker-payment-2
       PAYMENT_CONSUMER_GROUP_ID: logpulse-payment-loader
 
+  # Prometheus 컨테이너 설정
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: logpulse-prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    ports:
+      - '9090:9090'
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - logpulse_net
+
+  # Grafana 컨테이너 설정
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: logpulse-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    ports:
+      - '3001:3000'
+    volumes:
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    networks:
+      - logpulse_net
+
 # 데이터 영구 저장
 volumes:
   kafka_1_data:
   kafka_2_data:
   kafka_3_data:
   clickhouse_data:
+  prometheus_data:
+  grafana_data:
 
 # Bridge 모드 네크워크, 컨테이너 간 DNS 통신
 networks:

@@ -6,6 +6,7 @@ import { ClickHouseWriterService } from '../clickhouse/clickhouse-writer.service
 import { toClickHouseDateTime } from '../common/datetime.util';
 import { retryWithBackoff } from '../common/retry.util';
 import { RedisDedupService } from '../redis/redis-dedup.service';
+import { clickBatchDroppedTotal, clickRedisBatchDedupTotal, kafkaConsumerLag, redisDedupFailOpenTotal } from '../metrics/metrics';
 
 // Kafka에서 가져오는 '클릭 이벤트' 인터페이스
 interface ClickEventEnvelope {
@@ -63,6 +64,16 @@ export class ClickEventsConsumer implements OnModuleInit, OnModuleDestroy {
     await this.consumer.run({
       autoCommit: clickConsumerConfig.autoCommit,
       eachBatch: async ({ batch, resolveOffset, heartbeat }: EachBatchPayload) => {
+        // 현재 파티션의 처리 지연(Lag)을 지표로 기록한다.
+        kafkaConsumerLag.set(
+          {
+            topic: clickConsumerConfig.topic,
+            partition: String(batch.partition),
+            consumer_group: clickConsumerConfig.groupId,
+          },
+          Number(batch.offsetLag()),
+        );
+
         // 배치 전체를 파싱한다.
         const envelopes = batch.messages.map(
           (message) => JSON.parse(message.value!.toString()) as ClickEventEnvelope,
@@ -91,6 +102,8 @@ export class ClickEventsConsumer implements OnModuleInit, OnModuleDestroy {
 
   // Kafka batch 단위로 Redis 배치 Dedup 후 선점 성공 이벤트만 BatchBuffer에 추가한다.
   private async processClickBatch(envelopes: ClickEventEnvelope[]): Promise<void> {
+    clickRedisBatchDedupTotal.inc(envelopes.length);
+
     const claimed = await this.dedupeAndClaim(envelopes);
 
     for (const envelope of claimed) {
@@ -120,6 +133,7 @@ export class ClickEventsConsumer implements OnModuleInit, OnModuleDestroy {
       );
     } catch (err) {
       this.logger.warn(`Redis Batch Read 실패(fail-open): ${(err as Error).message}`);
+      redisDedupFailOpenTotal.inc();
       return uniqueList;
     }
 
@@ -142,6 +156,7 @@ export class ClickEventsConsumer implements OnModuleInit, OnModuleDestroy {
       );
     } catch (err) {
       this.logger.warn(`Redis Pipeline 선점 실패(fail-open): ${(err as Error).message}`);
+      redisDedupFailOpenTotal.inc();
       return candidates;
     }
 
@@ -161,6 +176,7 @@ export class ClickEventsConsumer implements OnModuleInit, OnModuleDestroy {
     } catch (err) {
       this.failedBatchCount += 1;
       this.failedRowCount += rows.length;
+      clickBatchDroppedTotal.inc(rows.length);
 
       this.logger.warn(
         {

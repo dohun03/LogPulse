@@ -6,6 +6,7 @@ import { retryWithBackoff } from '../common/retry.util';
 import { kafkaBrokers, kafkaClientId, paymentConsumerConfig } from '../config/consumer.config';
 import { DlqProducerService } from '../dlq/dlq-producer.service';
 import { RedisDedupService } from '../redis/redis-dedup.service';
+import { kafkaConsumerLag, paymentBatchInsertFailuresTotal, paymentBatchInsertTotal, paymentDlqSendFailuresTotal, paymentDlqSentTotal, redisDedupFailClosedRetryTotal } from '../metrics/metrics';
 
 // Kafka에서 가져오는 '결제 이벤트' 인터페이스
 interface PaymentEventEnvelope {
@@ -60,6 +61,16 @@ export class PaymentEventsConsumer implements OnModuleInit, OnModuleDestroy {
         commitOffsetsIfNecessary,
         uncommittedOffsets,
       }: EachBatchPayload) => {
+        // 현재 파티션의 처리 지연(Lag)을 지표로 기록한다.
+        kafkaConsumerLag.set(
+          {
+            topic: paymentConsumerConfig.topic,
+            partition: String(batch.partition),
+            consumer_group: paymentConsumerConfig.groupId,
+          },
+          Number(batch.offsetLag()),
+        );
+
         // Kafka batch 전체를 파싱/처리한다.
         const envelopes = batch.messages.map(
           (message) => JSON.parse(message.value!.toString()) as PaymentEventEnvelope,
@@ -105,6 +116,8 @@ export class PaymentEventsConsumer implements OnModuleInit, OnModuleDestroy {
           uniqueList.map((envelope) => envelope.eventId),
         ),
       paymentConsumerConfig.maxRetry,
+      200,
+      () => redisDedupFailClosedRetryTotal.inc(),
     );
 
     // 중복 이벤트 제외
@@ -125,7 +138,9 @@ export class PaymentEventsConsumer implements OnModuleInit, OnModuleDestroy {
         () => this.clickhouseWriter.insertPaymentEvents(rows),
         paymentConsumerConfig.maxRetry,
       );
+      paymentBatchInsertTotal.inc();
     } catch (err) {
+      paymentBatchInsertFailuresTotal.inc();
       // 실패: 유효 이벤트를 DLQ로 이관한다.(배치 내부의 유효하지 않은 DUPLICATE 이벤트는 DLQ로 보내지 않는다.)
       const reason = (err as Error).message;
 
@@ -154,6 +169,8 @@ export class PaymentEventsConsumer implements OnModuleInit, OnModuleDestroy {
           paymentConsumerConfig.dedupTtlSec,
         ),
       paymentConsumerConfig.maxRetry,
+      200,
+      () => redisDedupFailClosedRetryTotal.inc(),
     );
   }
 
@@ -163,10 +180,16 @@ export class PaymentEventsConsumer implements OnModuleInit, OnModuleDestroy {
     reason: string,
   ): Promise<void> {
     for (const event of events) {
-      await retryWithBackoff(
-        () => this.dlqProducer.send(event, reason),
-        paymentConsumerConfig.maxRetry,
-      );
+      try {
+        await retryWithBackoff(
+          () => this.dlqProducer.send(event, reason),
+          paymentConsumerConfig.maxRetry,
+        );
+        paymentDlqSentTotal.inc();
+      } catch (err) {
+        paymentDlqSendFailuresTotal.inc();
+        throw err;
+      }
     }
   }
 
