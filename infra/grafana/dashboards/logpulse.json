@@ -9,9 +9,93 @@
   "panels": [
     {
       "type": "timeseries",
-      "title": "Kafka Consumer Lag",
+      "title": "컨테이너별 CPU / RAM 사용률",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 10,
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "color": { "mode": "palette-classic" } },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": "/ RAM$/" },
+            "properties": [
+              { "id": "unit", "value": "bytes" },
+              { "id": "custom.axisPlacement", "value": "right" }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (name) (rate(container_cpu_usage_seconds_total{name=~\"logpulse-.+\"}[1m])) * 100",
+          "legendFormat": "{{name}} CPU",
+          "range": true,
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (name) (container_memory_working_set_bytes{name=~\"logpulse-.+\"})",
+          "legendFormat": "{{name}} RAM",
+          "range": true,
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "컨테이너별 Network / Disk I/O",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 11,
+      "fieldConfig": {
+        "defaults": { "unit": "Bps", "color": { "mode": "palette-classic" } },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (name) (rate(container_network_receive_bytes_total{name=~\"logpulse-.+\"}[1m]))",
+          "legendFormat": "{{name}} RX",
+          "range": true,
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (name) (rate(container_network_transmit_bytes_total{name=~\"logpulse-.+\"}[1m]))",
+          "legendFormat": "{{name}} TX",
+          "range": true,
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "refId": "C",
+          "expr": "sum by (name) (rate(container_fs_reads_bytes_total{name=~\"logpulse-.+\"}[1m]))",
+          "legendFormat": "{{name}} Disk Read",
+          "range": true,
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "refId": "D",
+          "expr": "sum by (name) (rate(container_fs_writes_bytes_total{name=~\"logpulse-.+\"}[1m]))",
+          "legendFormat": "{{name}} Disk Write",
+          "range": true,
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Kafka Consumer Lag",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "id": 1,
       "fieldConfig": {
         "defaults": { "unit": "short", "color": { "mode": "palette-classic" } },
@@ -35,7 +119,7 @@
       "type": "timeseries",
       "title": "API 요청 수 (상태코드)",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "id": 2,
       "fieldConfig": {
         "defaults": { "unit": "reqps", "color": { "mode": "palette-classic" } },
@@ -59,7 +143,7 @@
       "type": "timeseries",
       "title": "API 응답시간 p50/p95/p99",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
       "id": 3,
       "fieldConfig": {
         "defaults": { "unit": "s", "color": { "mode": "palette-classic" } },
@@ -97,7 +181,7 @@
       "type": "timeseries",
       "title": "Click Batch Dedup 처리량",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
       "id": 4,
       "fieldConfig": {
         "defaults": { "unit": "ops", "color": { "mode": "palette-classic" } },
@@ -121,7 +205,7 @@
       "type": "timeseries",
       "title": "Click Redis Fail-Open",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
       "id": 5,
       "fieldConfig": {
         "defaults": { "unit": "ops", "color": { "mode": "palette-classic" } },
@@ -145,7 +229,7 @@
       "type": "timeseries",
       "title": "Click BatchBuffer Drop",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
       "id": 6,
       "fieldConfig": {
         "defaults": { "unit": "ops", "color": { "mode": "palette-classic" } },
@@ -169,7 +253,7 @@
       "type": "timeseries",
       "title": "Payment Bulk Insert",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
       "id": 7,
       "fieldConfig": {
         "defaults": { "unit": "ops", "color": { "mode": "palette-classic" } },
@@ -200,7 +284,7 @@
       "type": "timeseries",
       "title": "Payment Redis Retry (Fail-Closed)",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
       "id": 8,
       "fieldConfig": {
         "defaults": { "unit": "ops", "color": { "mode": "palette-classic" } },
@@ -224,7 +308,7 @@
       "type": "timeseries",
       "title": "Payment DLQ 발행",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 32 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 40 },
       "id": 9,
       "fieldConfig": {
         "defaults": { "unit": "ops", "color": { "mode": "palette-classic" } },
@@ -261,5 +345,5 @@
   "timezone": "browser",
   "title": "LogPulse 모니터링",
   "uid": "logpulse",
-  "version": 1
+  "version": 2
 }
