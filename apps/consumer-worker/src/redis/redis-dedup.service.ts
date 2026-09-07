@@ -9,7 +9,21 @@ export type DedupResult =
 @Injectable()
 export class RedisDedupService implements OnModuleDestroy {
   private readonly logger = new Logger(RedisDedupService.name);
-  private readonly redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
+
+  private readonly redis = new Redis(
+    process.env.REDIS_URL ?? 'redis://localhost:6379',
+    {
+      maxRetriesPerRequest: 1,                               // 재연결 횟수
+      retryStrategy: (times) => Math.min(times * 200, 1000), // 연결 재연결 간격(백오프). 최대 1초
+    },
+  );
+
+  constructor() {
+    // ioredis 'error' 이벤트를 반드시 구독한다, 핸들러가 없으면 Node.js 프로세스가 종료될 수 있다.
+    this.redis.on('error', (err) => {
+      this.logger.warn(`Redis 연결 오류: ${err.message}`);
+    });
+  }
 
   async onModuleDestroy() {
     this.redis.disconnect();

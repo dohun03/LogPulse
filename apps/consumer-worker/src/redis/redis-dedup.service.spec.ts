@@ -7,6 +7,7 @@ jest.mock('ioredis', () => {
     mget: jest.fn(),
     pipeline: jest.fn(),
     disconnect: jest.fn(),
+    on: jest.fn(),
   }));
 });
 
@@ -21,11 +22,19 @@ describe('RedisDedupService', () => {
         mget: jest.Mock;
         pipeline: jest.Mock;
         disconnect: jest.Mock;
+        on: jest.Mock;
       };
     }).redis;
 
   beforeEach(() => {
     service = new RedisDedupService();
+  });
+
+  it('생성 시 ioredis error 이벤트 핸들러를 등록한다', () => {
+    expect(redisMock().on).toHaveBeenCalledWith(
+      'error',
+      expect.any(Function),
+    );
   });
 
   it('checkAndMark: 신규 이벤트면 NEW를 반환한다', async () => {
