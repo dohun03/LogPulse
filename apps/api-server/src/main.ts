@@ -19,11 +19,10 @@ async function bootstrap() {
   await app.register(fastifyHelmet);                 // HTTP 응답 헤더에 보안 관련 헤더 자동 설정
   await app.register(fastifyCors, { origin: true }); // CORS 허용
 
-  // 각 서버 당 TPS 2500 설정 x2
-  const aggregateRateLimit = Number(process.env.RATE_LIMIT_MAX ?? 5000);             // TPS: 5000 설정
-  const apiInstanceCount = Math.max(1, Number(process.env.API_INSTANCE_COUNT ?? 2)); // API 서버 인스턴스 개수: 2
+  // 각 서버 당 RATE_LIMIT_MAX 설정(클라이언트 단일 IP 기준)
+  const maxPerIp = Number(process.env.RATE_LIMIT_MAX ?? 100);
   await app.register(fastifyRateLimit, {
-    max: Math.ceil(aggregateRateLimit / apiInstanceCount),
+    max: maxPerIp,
     timeWindow: '1 second',
   });
 
@@ -40,9 +39,12 @@ async function bootstrap() {
   app.useGlobalFilters(new GlobalExceptionFilter());
 
   const port = Number(process.env.PORT ?? 3000);
+  // 동시 연결 대비 listen backlog 증설 (Node.js 기본 511 → 1024)
+  const backlog = Number(process.env.LISTEN_BACKLOG ?? 1024);
   await app.listen({
     port,
     host: '0.0.0.0',
+    backlog,
   });
 }
 
