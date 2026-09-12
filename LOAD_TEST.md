@@ -3,14 +3,13 @@
 - 대상: LogPulse 이벤트 수집 파이프라인 (Nginx → API 2대 → Kafka 3브로커 → Consumer 5대 → Redis/ClickHouse)
 - 도구: k6 (Docker 컨테이너, 애플리케이션과 동일 네트워크에서 직접 요청)
 - 환경: WSL2 + Docker Compose (로컬)
-- 실행 일시: 2026-09-11
 - 목표: 3,000 TPS 이상 처리, 순간 5,000 TPS 대응
 
 [← README로 돌아가기](./README.md)
 
 ---
 
-## 0. 종합 요약 (이력서/발표 요약용)
+## 0. 종합 요약
 
 | 항목 | 결과 |
 |---|---|

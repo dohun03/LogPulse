@@ -42,9 +42,28 @@ Client → Nginx → API 서버 2대 → Kafka(3 브로커) → Click/Payment Co
 
 ---
 
-## ✅ 성능 검증 결과 (요약)
+## 🧯 장애 복구 검증
 
-> 전체 8단계 병목 추적 과정은 **[부하 테스트 전체 리포트](./LOAD_TEST.md)** 참고
+> 전체 검증 과정은 **[장애 복구 테스트 리포트](./FAULT_TOLERANCE.md)** 참고
+
+부하 테스트에 앞서, API/Kafka/Redis/ClickHouse를 각각 실제로 종료시켜 8개 장애·복구 시나리오를 재현했습니다.
+
+| 시나리오 | 결과 |
+|---|---|
+| API 서버 1대 장애 | ✅ Nginx가 나머지 1대로 트래픽 유지, 복귀 후 재분산 확인 |
+| Kafka Broker 1대 장애 | ✅ RF/ISR 범위 내 Cluster 정상 동작, Partition 재할당 확인 |
+| Redis 장애 — Click | ✅ Fail-Open으로 처리 계속 |
+| Redis 장애 — Payment | ✅ Fail-Closed로 안전하게 처리 지연 |
+| ClickHouse 장애 — Click | ✅ Batch Flush 재시도 2회 후 폐기 정책대로 동작 |
+| ClickHouse 장애 — Payment | ✅ Retry 소진 시 배치 전체 DLQ 이관, Offset 조기 커밋 없음 |
+| Consumer Rebalance — Click | ✅ 남은 Consumer에게 Partition 자동 재할당 |
+| Consumer Rebalance — Payment | ✅ 남은 Consumer에게 Partition 자동 재할당 |
+
+---
+
+## ✅ 성능 검증 결과 (k6 부하 테스트)
+
+> 자세한 내용은 **[부하 테스트 전체 리포트](./LOAD_TEST.md)** 참고
 
 | 항목 | 값 |
 |---|---|
@@ -54,7 +73,7 @@ Client → Nginx → API 서버 2대 → Kafka(3 브로커) → Click/Payment Co
 | 3,000 TPS 최초 시도 시 | 에러율 83.62% → 8단계 디버깅으로 10.78%까지 단계적 개선 |
 | 병목 원인 | 애플리케이션 로직 결함이 아닌 **WSL2 로컬 인프라 리소스 제약**으로 최종 규명 |
 
-목표치(3,000 TPS)는 미달성했지만, Nginx / API / Kafka 3개 레이어에 걸쳐 8개의 병목 후보 가설을 데이터로 하나씩 검증·반증하며 실측 한계치를 확정했습니다. 자세한 진단 과정은 리포트에서 확인할 수 있습니다.
+목표치(3,000 TPS)는 미달성했지만, Nginx / API / Kafka 3개 레이어에 걸쳐 8개의 병목 후보 가설을 데이터로 하나씩 검증·반증하며 실측 한계치를 확정했습니다.
 
 ---
 
@@ -68,7 +87,7 @@ Client → Nginx → API 서버 2대 → Kafka(3 브로커) → Click/Payment Co
 
 ---
 
-## ⚡ 트러블슈팅 (핵심만)
+## ⚡ 핵심 트러블슈팅
 
 <details>
 <summary><b>1. Redis 순차 호출 제거 — Kafka batch 단위 Dedup</b></summary>
@@ -87,8 +106,6 @@ Kafka batch를 순회하며 메시지마다 Redis를 `await`하는 구조는 N�
 
 k6 부하 테스트 초기 에러율 83.62%. Nginx 502 로그, API 응답 지연 분포, Kafka Consumer Lag을 교차 분석하며 Rate Limit → Kafka Producer 백프레셔 → Nginx 커넥션 고갈 → Kafka produce 블로킹 → LZ4 압축 → Nginx 헬스체크 민감도 → Payment acks=all → 메인 스레드 블로킹까지 8개 가설을 순서대로 검증/반증. 최종적으로 WSL2 로컬 Kafka 브로커의 produce 처리량 한계로 확정하고, 안정적 처리량(약 1,000 TPS)을 실측으로 확정.
 </details>
-
-> 전체 진단 과정과 각 단계의 수치는 [부하 테스트 전체 리포트](./LOAD_TEST.md) 참고
 
 ---
 
@@ -128,7 +145,7 @@ k6 부하 테스트 초기 에러율 83.62%. Nginx 502 로그, API 응답 지연
 
 - **목표 3,000 TPS를 못 채운 것을 어떻게 받아들였는지**: 처음엔 에러율 83.62%를 보고 애플리케이션 설계 결함이라 의심했지만, Kafka Lag이 항상 0이라는 사실이 "백엔드 처리 능력은 충분한데 뭔가 다른 게 막고 있다"는 단서였습니다. 결과를 그대로 받아들이지 않고 각 레이어(Nginx/API/Kafka)의 로그를 분리해서 원인을 좁혀간 과정이 이 프로젝트에서 가장 남는 경험입니다.
 - **틀렸던 진단도 기록으로 남긴 이유**: 1차 진단(Nginx 커넥션 고갈)은 틀렸고, 수정해도 효과가 없었습니다. 이걸 지우지 않고 "왜 틀렸는지"까지 남긴 이유는, 실제 트러블슈팅은 한 번에 정답을 맞히는 게 아니라 가설을 세우고 데이터로 반증하는 과정의 반복이라고 생각했기 때문입니다.
-- **다음에 다시 한다면**: WSL2 로컬 환경이 아닌 실제 서버(클라우드 인스턴스) 환경에서 동일 테스트를 재실행해, 지금 찾은 한계(1,000 TPS)가 로컬 리소스 제약이 맞는지 교차 검증하고 싶습니다. 또한 Kafka producer의 `acks`, 배치 크기를 더 체계적으로 스윕(sweep)하며 처리량-지연시간 트레이드오프 곡선을 그려보고 싶습니다.
+- **다음에 다시 한다면**: WSL2 로컬 환경이 아닌 실제 서버(클라우드 인스턴스) 환경에서 동일 테스트를 재실행해, 지금 찾은 한계(1,000 TPS)가 로컬 리소스 제약이 맞는지 교차 검증하고 싶습니다.
 
 ---
 
