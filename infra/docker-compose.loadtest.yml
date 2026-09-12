@@ -1,0 +1,20 @@
+version: '3.9'
+
+# K6 부하 테스트용 Rate Limit Override 파일
+# 운영 docker-compose.yml의 설정을 유지하고, 이 파일만 추가로 로드하여 K6 테스트에 필요한 높은 Rate Limit을 적용한다.
+# 
+# 실행 방법:
+# docker-compose -f infra/docker-compose.yml -f infra/docker-compose.loadtest.yml up
+#
+# 목표:
+# - K6가 단일 IP에서 발송하므로, 단일 IP당 최소 10,000 req/sec 이상 허용
+# - RATE_LIMIT_MAX를 API 인스턴스 수(2)로 나누면 = 10,000 / 2 = 5,000 req/sec/instance
+
+services:
+  api-server-1:
+    environment:
+      RATE_LIMIT_MAX: '10000'    # 단일 IP당 10,000 req/sec (K6 테스트용)
+  
+  api-server-2:
+    environment:
+      RATE_LIMIT_MAX: '10000'    # 단일 IP당 10,000 req/sec (K6 테스트용)
