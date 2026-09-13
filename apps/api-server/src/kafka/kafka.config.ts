@@ -7,6 +7,7 @@ CompressionCodecs[CompressionTypes.LZ4] =
 export const clickProducerConfig = {
   acks: 1,
   compression: CompressionTypes.LZ4,
+  maxInFlightRequests: 5,
 } as const;
 
 export const paymentProducerConfig = {

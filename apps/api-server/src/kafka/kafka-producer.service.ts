@@ -16,6 +16,7 @@ export class KafkaProducerService implements OnModuleInit, OnModuleDestroy {
 
   private readonly clickProducer: Producer = this.kafka.producer({
     allowAutoTopicCreation: false, // 토픽 자동 생성 X
+    maxInFlightRequests: clickProducerConfig.maxInFlightRequests, // 동시 전송 파이프라이닝
   });
 
   private readonly paymentProducer: Producer = this.kafka.producer({
@@ -90,6 +91,25 @@ export class KafkaProducerService implements OnModuleInit, OnModuleDestroy {
         errorCode: 'BROKER_UNAVAILABLE',
         message: 'click-events 발행에 실패했습니다.',
       });
+    }
+  }
+
+  // click 이벤트 배치 전송: linger 동안 모인 여러 메시지를 1회 produce로 묶어 전송
+  async sendClickBatch(messages: { key: string; value: unknown }[]) {
+    if (messages.length === 0) return;
+    try {
+      await this.clickProducer.send({
+        topic: process.env.KAFKA_CLICK_TOPIC ?? 'click-events',
+        acks: clickProducerConfig.acks,
+        compression: clickProducerConfig.compression,
+        messages: messages.map(({ key, value }) => ({
+          key,
+          value: JSON.stringify(value),
+        })),
+      });
+    } catch {
+      this.clickConnected = false;
+      // best-effort: click-events는 유실 허용 정책이므로 배치 발행 실패 시 무시(재시도 없음)
     }
   }
 
